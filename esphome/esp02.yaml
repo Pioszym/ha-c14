@@ -9,7 +9,7 @@ esphome:
 esp32:
   board: esp32dev
   framework:
-    type: esp-idf
+    type: arduino
 
 api:
   encryption:
@@ -87,20 +87,46 @@ globals:
   - id: g_master_on
     type: bool
     initial_value: "true"    # default ON
-  - id: g_bridge_on
-    type: bool
-    initial_value: "true"
   - id: g_forward_on
     type: bool
     initial_value: "false"   # domyslnie OFF zeby nie kolidowal z masterem
   - id: g_gear_cmd
     type: uint8_t
     restore_value: true
-    initial_value: "0x43"   # Bieg 1
+    initial_value: "0x03"   # Manual B1 (0x01=Stop, 0x03=B1, 0x05=B2, 0x07=B3; +0x08=chlodz overlay dodawany dynamicznie)
   - id: g_bypass_cmd
     type: uint8_t
     restore_value: true
-    initial_value: "0x61"   # AUTO
+    initial_value: "0x61"   # AUTO (0x60=OFF, 0x61=AUTO, 0x62=ON)
+  - id: g_season
+    type: uint8_t
+    restore_value: true
+    initial_value: "0"      # 0=Zima, 1=Lato bez, 2=Chlodzenie
+  - id: g_wietrz_on
+    type: bool
+    restore_value: true
+    initial_value: "false"
+  # Setpointy temperatur (5 trybow, wartosci w stopniach C)
+  - id: g_sp_comfort
+    type: float
+    restore_value: true
+    initial_value: "23.0"
+  - id: g_sp_eco
+    type: float
+    restore_value: true
+    initial_value: "21.0"
+  - id: g_sp_chlodz
+    type: float
+    restore_value: true
+    initial_value: "23.0"
+  - id: g_sp_reczna
+    type: float
+    restore_value: true
+    initial_value: "22.0"
+  - id: g_sp_poza
+    type: float
+    restore_value: true
+    initial_value: "20.0"
   - id: g_cycle_count
     type: uint32_t
     initial_value: "0"
@@ -184,7 +210,8 @@ globals:
     initial_value: "95"   # 0x5F
 
 script:
-  # Wyslij ramke na uart_aero + opcjonalnie uart_nano (gdy forward ON)
+  # Master TX: zawsze wysyla na OBA UART-y (uart_aero do AERO, uart_nano do slaves na magistrali Nano).
+  # Forward jest passive bridge AERO<->Nano w interval parsers, nie tutaj.
   - id: tx_frame
     mode: single
     parameters:
@@ -195,9 +222,7 @@ script:
           id(g_last_tx_ms) = millis();
           id(g_last_tx_name) = name;
           id(uart_aero).write_array(bytes.data(), bytes.size());
-          if (id(g_forward_on)) {
-            id(uart_nano).write_array(bytes.data(), bytes.size());
-          }
+          id(uart_nano).write_array(bytes.data(), bytes.size());
           if (id(g_log_esp)) {
             char h[120]; int p = 0;
             for (size_t i = 0; i < bytes.size() && p < 110; i++)
@@ -233,9 +258,10 @@ script:
                      0x7E,0x00,0x00,0x7E,0x7E,0x23 };
       - delay: 800ms
 
-      # 3. E5(29) — setpointy + bypass + TRYB dynamiczny
-      # f[28]: 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrz (?), 5=Harmonogram
-      # f[6-7] to kopia temp Czerpnia z cache AERO E4(63)
+      # 3. E5(29) — setpointy + bypass + sezon
+      # f[6-7]=T.Czerpnia (z cache AERO), f[8-9]=Comfort, f[10-11]=Eco, f[12-13]=Chlodzenie,
+      # f[14-15]=Zadana reczna, f[16-17]=Poza domem, f[25]=bypass, f[27]=sezon (0/0x0A/0x14),
+      # f[28]=kod biegu dla UI (0=Stop, 1=B1, 2=B2, 3=B3)
       - script.execute:
           id: tx_frame
           name: "3"
@@ -243,28 +269,32 @@ script:
             std::vector<uint8_t> f = {
               0xE5,0x21,0x00,0x29,0x00,0x00,0x10,0x4D,0x11,0x36,0x11,0x22,
               0x11,0x36,0x11,0x2C,0x11,0x18,0x00,0x30,0x7E,0x00,0x7E,0x00,
-              0x00,0x61,0x00,0x01,0x01,0x23 };
+              0x00,0x61,0x00,0x00,0x00,0x23 };
+            // Kodowanie temperatury: val = temp*10 + 2000 -> H=val/128, L=val%128
+            auto enc = [&f](int idx, float t) {
+              int16_t v = (int16_t)(t * 10.0f) + 2000;
+              if (v < 0) v = 0;
+              f[idx] = (v / 128) & 0xFF;
+              f[idx+1] = (v % 128) & 0xFF;
+            };
+            if (id(g_cache_valid)) enc(6, id(g_cache_czerp));
+            enc(8, id(g_sp_comfort));
+            enc(10, id(g_sp_eco));
+            enc(12, id(g_sp_chlodz));
+            enc(14, id(g_sp_reczna));
+            enc(16, id(g_sp_poza));
             f[25] = id(g_bypass_cmd);
-            // f[28] = tryb/bieg manual (zgodny z E4 f[28])
-            uint8_t g = id(g_gear_cmd);
-            uint8_t mode = 0x00;
-            if      (g == 0x41) mode = 0x00;  // Stop
-            else if (g == 0x43) mode = 0x01;  // B1
-            else if (g == 0x45) mode = 0x02;  // B2
-            else if (g == 0x47) mode = 0x03;  // B3
-            f[28] = mode;
-            // Wstrzyknij temp Czerpnia z cache (jak Nano kopiuje z AERO)
-            if (id(g_cache_valid)) {
-              // Odwrotnie do T(): val = temp*10 + 2000 -> f[6]=val/128, f[7]=val%128
-              int16_t val = (int16_t)(id(g_cache_czerp) * 10.0f) + 2000;
-              if (val >= 0 && val < 32768) {
-                f[6] = (val / 128) & 0xFF;
-                f[7] = (val % 128) & 0xFF;
-              }
-            }
+            // f[27] sezon: 0=Zima -> 0x00, 1=Lato bez -> 0x0A, 2=Chlodzenie -> 0x14
+            uint8_t s27 = 0x00;
+            if (id(g_season) == 1) s27 = 0x0A;
+            else if (id(g_season) == 2) s27 = 0x14;
+            f[27] = s27;
+            // f[28] kod biegu w E5: 0/1/2/3 sekwencyjnie (bez bitu validity)
+            uint8_t g = id(g_gear_cmd) & 0x07;
+            f[28] = (g == 0x01) ? 0x00 : (g == 0x03) ? 0x01 : (g == 0x05) ? 0x02 : (g == 0x07) ? 0x03 : 0x00;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
-            f[2] = (s + 0x23) & 0xFF;
+            f[2] = (s + 0xA3) & 0xFF;
             return f;
       - delay: 800ms
 
@@ -318,7 +348,10 @@ script:
                      0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
       - delay: 800ms
 
-      # 9. E4(29) — komenda biegu (przed query, zeby AERO zdazyla odpowiedziec z nowym stanem)
+      # 9. E4(29) — komenda biegu + sezon + wietrzenie (przed query, zeby AERO zdazyla odpowiedziec)
+      # f[8-9]=zegar, f[12-13]=temp pokojowa (copy z cache), f[14-15]=aktywny setpoint Comfort,
+      # f[27]=sezon (0x00/0x08/0x10) + bit 0x20 wietrzenie + bity 0-1 tryb temp manual (0x02),
+      # f[28]=bieg manual (0x01/03/05/07) + overlay chlodz (0x08) gdy sezon=Chlodzenie
       - script.execute:
           id: tx_frame
           name: "9"
@@ -326,10 +359,34 @@ script:
             std::vector<uint8_t> f = {
               0xE4,0x21,0x00,0x29,0x0A,0x40,0x00,0x02,0x08,0x2E,0x7E,0x00,
               0x11,0x0E,0x11,0x22,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-              0x14,0x64,0x02,0x04,0x00,0x43,0x23 };
+              0x14,0x64,0x02,0x04,0x00,0x03,0x23 };
             auto t = id(ha_time).now();
-            if (t.is_valid()) { f[8] = t.hour & 0xFF; f[9] = t.minute & 0xFF; }
-            f[28] = id(g_gear_cmd);
+            if (t.is_valid()) {
+              f[4] = t.day_of_month & 0xFF;   // dzien miesiaca
+              f[7] = t.day_of_week & 0xFF;    // dzien tygodnia (1=Mon, 7=Sun)
+              f[8] = t.hour & 0xFF;
+              f[9] = t.minute & 0xFF;
+            }
+            auto enc = [&f](int idx, float tv) {
+              int16_t v = (int16_t)(tv * 10.0f) + 2000;
+              if (v < 0) v = 0;
+              f[idx] = (v / 128) & 0xFF;
+              f[idx+1] = (v % 128) & 0xFF;
+            };
+            // f[12-13] = temp pokojowa (u Nano to sensor CTP, u nas przyblizenie z Comfort setpoint)
+            enc(12, id(g_sp_comfort));
+            // f[14-15] = aktywny setpoint (Comfort jako default)
+            enc(14, id(g_sp_comfort));
+            // f[27]: bity 0-1 = tryb temp (manual=0x02), bity 3-5 = sezon + wietrzenie
+            uint8_t v27 = 0x02;  // temp manual
+            if (id(g_season) == 1) v27 |= 0x08;
+            else if (id(g_season) == 2) v27 |= 0x10;
+            if (id(g_wietrz_on)) v27 |= 0x20;
+            f[27] = v27;
+            // f[28]: bieg manual + overlay chlodz
+            uint8_t v28 = id(g_gear_cmd);
+            if (id(g_season) == 2) v28 |= 0x08;
+            f[28] = v28;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + 0xA3) & 0xFF;
@@ -337,7 +394,9 @@ script:
       - delay: 800ms
 
       # 10. E3(29) src=44 — QUERY + nastawy % per bieg + znacznik biegu f[28]
-      # f[28] = E4 f[28] + 0x10 (Stop=0x51, B1=0x53, B2=0x55, B3=0x57)
+      # f[14-15]=Wiet wyw/naw, f[20-22]=B1/B2/B3 wyw, f[23-25]=B1/B2/B3 naw
+      # f[28] znacznik biegu dla iNext/slaves. Obserwowano pattern z Nano: f[28] = E4_f[28] + 0x50 w harm,
+      # dla manual uzywamy g_gear_cmd z overlay chlodz (spojnie z E4 f[28]).
       - script.execute:
           id: tx_frame
           name: "10"
@@ -345,8 +404,7 @@ script:
             std::vector<uint8_t> f = {
               0xE3,0x44,0x00,0x29,0x32,0x00,0x05,0x0A,0x28,0x1C,0x2A,0x1E,
               0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
-              0x2D,0x4B,0x20,0x01,0x53,0x23 };
-            // Wstrzyknij nastawy % ze sliderow
+              0x2D,0x4B,0x20,0x01,0x13,0x23 };
             f[14] = id(g_wyw_wiet);
             f[15] = id(g_naw_wiet);
             f[20] = id(g_wyw_b1);
@@ -355,11 +413,13 @@ script:
             f[23] = id(g_naw_b1);
             f[24] = id(g_naw_b2);
             f[25] = id(g_naw_b3);
-            // f[28] = znacznik biegu (spojny z E4 f[28])
-            f[28] = id(g_gear_cmd) + 0x10;
+            // f[28] znacznik biegu (obserwacja Nano: manual daje np. 0x13 dla B1, trzyma sie wzoru f[28] = bieg + 0x10)
+            uint8_t v28 = id(g_gear_cmd);
+            if (id(g_season) == 2) v28 |= 0x08;
+            f[28] = v28 + 0x10;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
-            f[2] = (s + 0x23) & 0xFF;
+            f[2] = (s + 0xA3) & 0xFF;
             return f;
       - delay: 800ms
 
@@ -369,7 +429,6 @@ interval:
   - interval: 100ms
     then:
       - lambda: |-
-          if (!id(g_bridge_on)) return;
           uint8_t b;
           int reads = 0;
           while (id(uart_aero).available() && reads++ < 256) {
@@ -444,7 +503,6 @@ interval:
   - interval: 100ms
     then:
       - lambda: |-
-          if (!id(g_bridge_on)) return;
           uint8_t b;
           int reads = 0;
           while (id(uart_nano).available() && reads++ < 256) {
@@ -484,22 +542,6 @@ interval:
             - script.execute: master_cycle
 
 switch:
-  - platform: template
-    name: "Bridge Enable"
-    id: sw_bridge
-    icon: mdi:bridge
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
-    turn_on_action:
-      - lambda: |-
-          id(g_bridge_on) = true;
-          id(g_nano_pos) = 0; id(g_aero_pos) = 0;
-          ESP_LOGW("c14m","=== BRIDGE ON (parsery aktywne) ===");
-    turn_off_action:
-      - lambda: |-
-          id(g_bridge_on) = false;
-          ESP_LOGW("c14m","=== BRIDGE OFF ===");
-
   - platform: template
     name: "Bridge Forward"
     id: sw_forward
@@ -584,6 +626,21 @@ switch:
           id(g_master_on) = false;
           ESP_LOGW("c14m","=== MASTER MODE OFF ===");
 
+  - platform: template
+    name: "Wietrzenie"
+    id: sw_wietrz
+    icon: mdi:weather-windy
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_wietrz_on) = true;
+          ESP_LOGW("c14m","=== Wietrzenie ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_wietrz_on) = false;
+          ESP_LOGW("c14m","=== Wietrzenie OFF ===");
+
 select:
   - platform: template
     name: "Bieg"
@@ -595,10 +652,10 @@ select:
     optimistic: true
     set_action:
       - lambda: |-
-          if      (x == "Stop")   id(g_gear_cmd) = 0x41;
-          else if (x == "Bieg 1") id(g_gear_cmd) = 0x43;
-          else if (x == "Bieg 2") id(g_gear_cmd) = 0x45;
-          else if (x == "Bieg 3") id(g_gear_cmd) = 0x47;
+          if      (x == "Stop")   id(g_gear_cmd) = 0x01;
+          else if (x == "Bieg 1") id(g_gear_cmd) = 0x03;
+          else if (x == "Bieg 2") id(g_gear_cmd) = 0x05;
+          else if (x == "Bieg 3") id(g_gear_cmd) = 0x07;
           ESP_LOGW("c14m","Bieg: %s (0x%02X)", x.c_str(), id(g_gear_cmd));
 
   - platform: template
@@ -615,6 +672,21 @@ select:
           else if (x == "AUTO") id(g_bypass_cmd) = 0x61;
           else if (x == "ON")   id(g_bypass_cmd) = 0x62;
           ESP_LOGW("c14m","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
+
+  - platform: template
+    name: "Sezon"
+    id: sel_season
+    icon: mdi:weather-partly-snowy
+    options: ["Zima ogrzewania", "Lato bez ogrz/chlodz", "Chlodzenie"]
+    initial_option: "Zima ogrzewania"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Zima ogrzewania")       id(g_season) = 0;
+          else if (x == "Lato bez ogrz/chlodz")  id(g_season) = 1;
+          else if (x == "Chlodzenie")            id(g_season) = 2;
+          ESP_LOGW("c14m","Sezon: %s (%d)", x.c_str(), id(g_season));
 
 number:
   - platform: template
@@ -732,6 +804,78 @@ number:
     mode: slider
     set_action:
       - lambda: 'id(g_wyw_wiet) = (uint8_t)x;'
+
+  # Setpointy temperatur (E5(29) f[8-17])
+  - platform: template
+    name: "Temp Comfort"
+    id: n_sp_comfort
+    icon: mdi:thermometer-high
+    min_value: 10
+    max_value: 30
+    step: 0.5
+    initial_value: 23.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_comfort) = x;'
+  - platform: template
+    name: "Temp Eco"
+    id: n_sp_eco
+    icon: mdi:thermometer-low
+    min_value: 10
+    max_value: 30
+    step: 0.5
+    initial_value: 21.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_eco) = x;'
+  - platform: template
+    name: "Temp Chlodzenie"
+    id: n_sp_chlodz
+    icon: mdi:snowflake-thermometer
+    min_value: 10
+    max_value: 30
+    step: 0.5
+    initial_value: 23.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_chlodz) = x;'
+  - platform: template
+    name: "Temp Reczna"
+    id: n_sp_reczna
+    icon: mdi:thermometer-auto
+    min_value: 10
+    max_value: 30
+    step: 0.5
+    initial_value: 22.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_reczna) = x;'
+  - platform: template
+    name: "Temp Poza domem"
+    id: n_sp_poza
+    icon: mdi:home-export-outline
+    min_value: 10
+    max_value: 30
+    step: 0.5
+    initial_value: 20.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_poza) = x;'
 
 sensor:
   - platform: template
