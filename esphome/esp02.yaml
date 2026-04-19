@@ -1,0 +1,811 @@
+substitutions:
+  device_name: esp02
+  friendly_name: "C14 Master"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+api:
+  encryption:
+    key: !secret esp02_api
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+packages:
+  wifi: !include packages/wifi_Pioszym_IoT.yaml
+  device_base: !include packages/device_base.yaml
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: Europe/Warsaw
+
+################################################################################
+# C14 ESP32 MASTER — TX do AERO przez uart_aero (GPIO16/17)
+#
+# Potwierdzone 2026-04-15:
+#   - E3(29) src=0x44 jest TRIGGEREM (AERO odpowiada E4(63) temperaturami)
+#   - E4(29) src=0x21 jest KOMENDA biegu (AERO reaguje mechanicznie)
+#   - Reszta 8 ramek = broadcasts dla Nano/iNext, AERO ignoruje
+#
+# Cykl mastera (kolejnosc: iNEXT pierwsze, QUERY ostatnia):
+#   1. E3(29) src56 iNEXT    + 800ms slot -> rezerwacja miejsca dla iNext
+#   2. E2(29) status         + 800ms slot
+#   3. E5(29) setpointy      + 800ms slot
+#   4. F0(29) heartbeat      + 800ms slot
+#   5. 81(29) Nano hb        + 800ms slot
+#   6. D0(29) slave cfg      + 800ms slot
+#   7. D1(29) slave cfg      + 800ms slot
+#   8. D2(29) slave cfg      + 800ms slot
+#   9. E4(29) bieg           + 800ms slot (komenda biegu)
+#   10. E3(29) src44 QUERY   + 800ms slot -> AERO odpowie E4(63)
+# Total: 10 * 800ms = 7.5s, interval 8500ms = jak Nano.
+# AERO odpowiada bliskawicznie (~400ms), wiec 800ms slot wystarcza.
+#
+# Wymagania hardware:
+#   - Nano odlaczony od busa (A/B) albo zostawiony pasywnie (ESP master)
+#   - AERO podlaczony przez HW-0519 na GPIO16(RX)/17(TX)
+################################################################################
+
+uart:
+  - id: uart_aero
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+  - id: uart_nano
+    rx_pin: GPIO4
+    tx_pin: GPIO18
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+
+globals:
+  - id: g_aero_buf
+    type: uint8_t[32]
+  - id: g_aero_pos
+    type: uint8_t
+    initial_value: "0"
+  - id: g_nano_buf
+    type: uint8_t[32]
+  - id: g_nano_pos
+    type: uint8_t
+    initial_value: "0"
+  - id: g_master_on
+    type: bool
+    initial_value: "true"    # default ON
+  - id: g_bridge_on
+    type: bool
+    initial_value: "true"
+  - id: g_forward_on
+    type: bool
+    initial_value: "false"   # domyslnie OFF zeby nie kolidowal z masterem
+  - id: g_gear_cmd
+    type: uint8_t
+    restore_value: true
+    initial_value: "0x43"   # Bieg 1
+  - id: g_bypass_cmd
+    type: uint8_t
+    restore_value: true
+    initial_value: "0x61"   # AUTO
+  - id: g_cycle_count
+    type: uint32_t
+    initial_value: "0"
+  - id: g_aero_resp_cycle
+    type: uint16_t
+    initial_value: "0"
+  - id: g_aero_resp_total
+    type: uint32_t
+    initial_value: "0"
+  - id: g_cnt_nano
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_tx_ms
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_tx_name
+    type: std::string
+    initial_value: '"none"'
+  # Cache temperatur AERO (ostatnie znane, dla broadcastu gdy AERO milczy)
+  - id: g_cache_czerp
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_nawiew
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_wyrzut
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_wywiew
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_valid
+    type: bool
+    initial_value: "false"
+  - id: g_cache_age_ms
+    type: uint32_t
+    initial_value: "0"
+  - id: g_log_nano
+    type: bool
+    initial_value: "false"
+  - id: g_log_aero
+    type: bool
+    initial_value: "false"
+  - id: g_log_esp
+    type: bool
+    initial_value: "false"
+  # Setpointy % nawiew/wywiew per bieg (1/2/3/wietrzenie)
+  # TODO: wstrzyknac do odpowiednich pol w E4(29)/E5(29) gdy zidentyfikujemy ktore
+  # Fabryczne wartosci z E3(29)_44 obserwowane
+  - id: g_naw_b1
+    type: uint8_t
+    restore_value: true
+    initial_value: "37"   # 0x25
+  - id: g_wyw_b1
+    type: uint8_t
+    restore_value: true
+    initial_value: "32"   # 0x20
+  - id: g_naw_b2
+    type: uint8_t
+    restore_value: true
+    initial_value: "45"   # 0x2D
+  - id: g_wyw_b2
+    type: uint8_t
+    restore_value: true
+    initial_value: "40"   # 0x28
+  - id: g_naw_b3
+    type: uint8_t
+    restore_value: true
+    initial_value: "75"   # 0x4B
+  - id: g_wyw_b3
+    type: uint8_t
+    restore_value: true
+    initial_value: "70"   # 0x46
+  - id: g_naw_wiet
+    type: uint8_t
+    restore_value: true
+    initial_value: "100"  # 0x64
+  - id: g_wyw_wiet
+    type: uint8_t
+    restore_value: true
+    initial_value: "95"   # 0x5F
+
+script:
+  # Wyslij ramke na uart_aero + opcjonalnie uart_nano (gdy forward ON)
+  - id: tx_frame
+    mode: single
+    parameters:
+      name: string
+      bytes: std::vector<uint8_t>
+    then:
+      - lambda: |-
+          id(g_last_tx_ms) = millis();
+          id(g_last_tx_name) = name;
+          id(uart_aero).write_array(bytes.data(), bytes.size());
+          if (id(g_forward_on)) {
+            id(uart_nano).write_array(bytes.data(), bytes.size());
+          }
+          if (id(g_log_esp)) {
+            char h[120]; int p = 0;
+            for (size_t i = 0; i < bytes.size() && p < 110; i++)
+              p += snprintf(h+p, 120-p, "%s%02X", i?",":"", bytes[i]);
+            ESP_LOGW("c14m", ">>> #%s_%s", name.c_str(), h);
+          }
+
+  # Cykl 10 ramek z 500ms slotem po kazdej
+  - id: master_cycle
+    mode: single
+    then:
+      - lambda: |-
+          id(g_aero_resp_cycle) = 0;
+          id(g_cycle_count)++;
+
+      # 1. E3(29) src=56 — iNEXT slot (pusty, rezerwacja miejsca)
+      - script.execute:
+          id: tx_frame
+          name: "1"
+          bytes: !lambda |-
+            return { 0xE3,0x56,0x05,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                     0x00,0x00,0x00,0x00,0x00,0x23 };
+      - delay: 800ms
+
+      # 2. E2(29) — status broadcast
+      - script.execute:
+          id: tx_frame
+          name: "2"
+          bytes: !lambda |-
+            return { 0xE2,0x44,0x1E,0x29,0x4D,0x00,0x00,0x00,0x03,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x00,0x00,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 3. E5(29) — setpointy + bypass + TRYB dynamiczny
+      # f[28]: 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrz (?), 5=Harmonogram
+      # f[6-7] to kopia temp Czerpnia z cache AERO E4(63)
+      - script.execute:
+          id: tx_frame
+          name: "3"
+          bytes: !lambda |-
+            std::vector<uint8_t> f = {
+              0xE5,0x21,0x00,0x29,0x00,0x00,0x10,0x4D,0x11,0x36,0x11,0x22,
+              0x11,0x36,0x11,0x2C,0x11,0x18,0x00,0x30,0x7E,0x00,0x7E,0x00,
+              0x00,0x61,0x00,0x01,0x01,0x23 };
+            f[25] = id(g_bypass_cmd);
+            // f[28] = tryb/bieg manual (zgodny z E4 f[28])
+            uint8_t g = id(g_gear_cmd);
+            uint8_t mode = 0x00;
+            if      (g == 0x41) mode = 0x00;  // Stop
+            else if (g == 0x43) mode = 0x01;  // B1
+            else if (g == 0x45) mode = 0x02;  // B2
+            else if (g == 0x47) mode = 0x03;  // B3
+            f[28] = mode;
+            // Wstrzyknij temp Czerpnia z cache (jak Nano kopiuje z AERO)
+            if (id(g_cache_valid)) {
+              // Odwrotnie do T(): val = temp*10 + 2000 -> f[6]=val/128, f[7]=val%128
+              int16_t val = (int16_t)(id(g_cache_czerp) * 10.0f) + 2000;
+              if (val >= 0 && val < 32768) {
+                f[6] = (val / 128) & 0xFF;
+                f[7] = (val % 128) & 0xFF;
+              }
+            }
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + 0x23) & 0xFF;
+            return f;
+      - delay: 800ms
+
+      # 4. F0(29) — heartbeat broadcast
+      - script.execute:
+          id: tx_frame
+          name: "4"
+          bytes: !lambda |-
+            return { 0xF0,0x44,0x4E,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 5. 81(29) — Nano heartbeat
+      - script.execute:
+          id: tx_frame
+          name: "5"
+          bytes: !lambda |-
+            return { 0x81,0x44,0x5F,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 6. D0(29) — slave config
+      - script.execute:
+          id: tx_frame
+          name: "6"
+          bytes: !lambda |-
+            return { 0xD0,0x44,0x65,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 7. D1(29)
+      - script.execute:
+          id: tx_frame
+          name: "7"
+          bytes: !lambda |-
+            return { 0xD1,0x44,0x66,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 8. D2(29)
+      - script.execute:
+          id: tx_frame
+          name: "8"
+          bytes: !lambda |-
+            return { 0xD2,0x44,0x67,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 9. E4(29) — komenda biegu (przed query, zeby AERO zdazyla odpowiedziec z nowym stanem)
+      - script.execute:
+          id: tx_frame
+          name: "9"
+          bytes: !lambda |-
+            std::vector<uint8_t> f = {
+              0xE4,0x21,0x00,0x29,0x0A,0x40,0x00,0x02,0x08,0x2E,0x7E,0x00,
+              0x11,0x0E,0x11,0x22,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+              0x14,0x64,0x02,0x04,0x00,0x43,0x23 };
+            auto t = id(ha_time).now();
+            if (t.is_valid()) { f[8] = t.hour & 0xFF; f[9] = t.minute & 0xFF; }
+            f[28] = id(g_gear_cmd);
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + 0xA3) & 0xFF;
+            return f;
+      - delay: 800ms
+
+      # 10. E3(29) src=44 — QUERY + nastawy % per bieg + znacznik biegu f[28]
+      # f[28] = E4 f[28] + 0x10 (Stop=0x51, B1=0x53, B2=0x55, B3=0x57)
+      - script.execute:
+          id: tx_frame
+          name: "10"
+          bytes: !lambda |-
+            std::vector<uint8_t> f = {
+              0xE3,0x44,0x00,0x29,0x32,0x00,0x05,0x0A,0x28,0x1C,0x2A,0x1E,
+              0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
+              0x2D,0x4B,0x20,0x01,0x53,0x23 };
+            // Wstrzyknij nastawy % ze sliderow
+            f[14] = id(g_wyw_wiet);
+            f[15] = id(g_naw_wiet);
+            f[20] = id(g_wyw_b1);
+            f[21] = id(g_wyw_b2);
+            f[22] = id(g_wyw_b3);
+            f[23] = id(g_naw_b1);
+            f[24] = id(g_naw_b2);
+            f[25] = id(g_naw_b3);
+            // f[28] = znacznik biegu (spojny z E4 f[28])
+            f[28] = id(g_gear_cmd) + 0x10;
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + 0x23) & 0xFF;
+            return f;
+      - delay: 800ms
+
+
+interval:
+  # RX parser dla uart_aero — loguje AERO E4(63) + cache temperatur
+  - interval: 100ms
+    then:
+      - lambda: |-
+          if (!id(g_bridge_on)) return;
+          uint8_t b;
+          int reads = 0;
+          while (id(uart_aero).available() && reads++ < 256) {
+            if (!id(uart_aero).read_byte(&b)) break;
+            if (id(g_aero_pos) < 32) {
+              id(g_aero_buf)[id(g_aero_pos)] = b;
+              id(g_aero_pos)++;
+            }
+            if (b == 0x23 && id(g_aero_pos) >= 30) {
+              uint8_t len = id(g_aero_pos);
+              uint8_t *f = id(g_aero_buf);
+              uint32_t dt = millis() - id(g_last_tx_ms);
+
+              auto T = [](uint8_t h, uint8_t l) -> float {
+                return ((h * 128) + (l % 128) - 2000) / 10.0f;
+              };
+
+              if (f[0] == 0xE4 && f[3] == 0x63) {
+                float cz = T(f[10], f[11]);
+                float nw = T(f[14], f[15]);
+                float wt = T(f[16], f[17]);
+                float wy = T(f[18], f[19]);
+                uint8_t naw_pct = f[24];
+                uint8_t wyw_pct = f[25];
+                uint8_t bieg = f[26];
+                bool bypass = (f[28] & 0x20) != 0;
+                // Cache do globals
+                id(g_cache_czerp) = cz;
+                id(g_cache_nawiew) = nw;
+                id(g_cache_wyrzut) = wt;
+                id(g_cache_wywiew) = wy;
+                id(g_cache_valid) = true;
+                id(g_cache_age_ms) = millis();
+                // Publikuj sensory
+                id(s_czerp).publish_state(cz);
+                id(s_nawiew).publish_state(nw);
+                id(s_wyrzut).publish_state(wt);
+                id(s_wywiew).publish_state(wy);
+                id(s_naw_pct).publish_state(naw_pct);
+                id(s_wyw_pct).publish_state(wyw_pct);
+                id(ts_bypass).publish_state(bypass ? "Otwarty" : "Zamkniety");
+                id(bs_fan).publish_state(naw_pct != 0 || wyw_pct != 0);
+                const char* nm[] = {"Stop","Bieg 1","Bieg 2","Bieg 3","Wietrzenie"};
+                if (bieg <= 4) id(ts_bieg).publish_state(nm[bieg]);
+                // AERO % -> tylko sensory aktualnego stanu, NIE rusza sliderow (slidery = setpointy usera)
+                id(g_aero_resp_cycle)++;
+                id(g_aero_resp_total)++;
+                if (id(g_log_aero)) {
+                  char h[120]; int p = 0;
+                  for (int i = 0; i < 30 && p < 110; i++)
+                    p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                  ESP_LOGE("c14m", "<<< [%s] dt=%ums bieg=%d cz=%.1f nw=%.1f wt=%.1f wy=%.1f naw=%d%% wyw=%d%% bp=%d",
+                    h, dt, bieg, cz, nw, wt, wy, naw_pct, wyw_pct, bypass);
+                }
+              } else if (id(g_log_aero)) {
+                char h[120]; int p = 0;
+                for (int i = 0; i < 30 && p < 110; i++)
+                  p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                ESP_LOGE("c14m", "<<< AERO %02X(%02X) dt=%ums [%s]",
+                  f[0], f[3], dt, h);
+              }
+              // Forward do NANO jesli aktywny
+              if (id(g_forward_on)) {
+                id(uart_nano).write_array(f, len);
+              }
+              id(g_aero_pos) = 0;
+            }
+            if (id(g_aero_pos) >= 32) id(g_aero_pos) = 0;
+          }
+
+  # RX parser dla uart_nano — logi + ewentualny forward do AERO
+  - interval: 100ms
+    then:
+      - lambda: |-
+          if (!id(g_bridge_on)) return;
+          uint8_t b;
+          int reads = 0;
+          while (id(uart_nano).available() && reads++ < 256) {
+            if (!id(uart_nano).read_byte(&b)) break;
+            if (id(g_nano_pos) < 32) {
+              id(g_nano_buf)[id(g_nano_pos)] = b;
+              id(g_nano_pos)++;
+            }
+            if (b == 0x23 && id(g_nano_pos) >= 30) {
+              uint8_t len = id(g_nano_pos);
+              uint8_t *f = id(g_nano_buf);
+              if (id(g_log_nano)) {
+                char h[120]; int p = 0;
+                for (int i = 0; i < len && p < 110; i++)
+                  p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                ESP_LOGI("c14m", "[NANO>] %02X(%02X) src=%02X [%s]",
+                  f[0], f[3], f[1], h);
+              }
+              // Nano E3(29)_44 -> tylko do podgladu/logu, slidery nie nadpisywane
+              id(g_cnt_nano)++;
+              // Forward do AERO jesli aktywny I master jest OFF (inaczej kolizja)
+              if (id(g_forward_on) && !id(g_master_on)) {
+                id(uart_aero).write_array(f, len);
+              }
+              id(g_nano_pos) = 0;
+            }
+            if (id(g_nano_pos) >= 32) id(g_nano_pos) = 0;
+          }
+
+  # Cykl co 8500ms (jak Nano), 10 ramek × 800ms = 7.5s + 1s margines
+  - interval: 8500ms
+    then:
+      - if:
+          condition:
+            lambda: 'return id(g_master_on);'
+          then:
+            - script.execute: master_cycle
+
+switch:
+  - platform: template
+    name: "Bridge Enable"
+    id: sw_bridge
+    icon: mdi:bridge
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: |-
+          id(g_bridge_on) = true;
+          id(g_nano_pos) = 0; id(g_aero_pos) = 0;
+          ESP_LOGW("c14m","=== BRIDGE ON (parsery aktywne) ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_bridge_on) = false;
+          ESP_LOGW("c14m","=== BRIDGE OFF ===");
+
+  - platform: template
+    name: "Bridge Forward"
+    id: sw_forward
+    icon: mdi:swap-horizontal
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          if (id(g_master_on)) {
+            ESP_LOGW("c14m","!!! Nie wlaczaj forward razem z master - kolizja TX na AERO !!!");
+          }
+          id(g_forward_on) = true;
+          ESP_LOGW("c14m","=== FORWARD ON (Nano<->AERO) ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_forward_on) = false;
+          ESP_LOGW("c14m","=== FORWARD OFF ===");
+
+  - platform: template
+    name: "Log NANO"
+    id: sw_log_nano
+    icon: mdi:console-line
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_log_nano) = true;
+          ESP_LOGW("c14m","=== LOG NANO ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_log_nano) = false;
+          ESP_LOGW("c14m","=== LOG NANO OFF ===");
+
+  - platform: template
+    name: "Log AERO"
+    id: sw_log_aero
+    icon: mdi:console-line
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_log_aero) = true;
+          ESP_LOGW("c14m","=== LOG AERO ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_log_aero) = false;
+          ESP_LOGW("c14m","=== LOG AERO OFF ===");
+
+  - platform: template
+    name: "Log ESP"
+    id: sw_log_esp
+    icon: mdi:console-network
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_log_esp) = true;
+          ESP_LOGW("c14m","=== LOG ESP ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_log_esp) = false;
+          ESP_LOGW("c14m","=== LOG ESP OFF ===");
+
+  - platform: template
+    name: "C14 Master ON"
+    id: sw_master
+    icon: mdi:swap-horizontal-bold
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: |-
+          if (id(g_forward_on)) {
+            ESP_LOGW("c14m","!!! Wylaczam forward (kolizja z masterem na AERO) !!!");
+            id(g_forward_on) = false;
+          }
+          id(g_master_on) = true;
+          id(g_cycle_count) = 0;
+          id(g_aero_resp_total) = 0;
+          ESP_LOGW("c14m","=== MASTER MODE ON (cykl 6s) ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_master_on) = false;
+          ESP_LOGW("c14m","=== MASTER MODE OFF ===");
+
+select:
+  - platform: template
+    name: "Bieg"
+    id: sel_gear
+    icon: mdi:fan
+    options: ["Stop", "Bieg 1", "Bieg 2", "Bieg 3"]
+    initial_option: "Bieg 1"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Stop")   id(g_gear_cmd) = 0x41;
+          else if (x == "Bieg 1") id(g_gear_cmd) = 0x43;
+          else if (x == "Bieg 2") id(g_gear_cmd) = 0x45;
+          else if (x == "Bieg 3") id(g_gear_cmd) = 0x47;
+          ESP_LOGW("c14m","Bieg: %s (0x%02X)", x.c_str(), id(g_gear_cmd));
+
+  - platform: template
+    name: "Bypass"
+    id: sel_bypass
+    icon: mdi:valve
+    options: ["OFF", "AUTO", "ON"]
+    initial_option: "AUTO"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "OFF")  id(g_bypass_cmd) = 0x60;
+          else if (x == "AUTO") id(g_bypass_cmd) = 0x61;
+          else if (x == "ON")   id(g_bypass_cmd) = 0x62;
+          ESP_LOGW("c14m","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
+
+number:
+  - platform: template
+    name: "% Nawiew Bieg 1"
+    id: n_naw_b1
+    icon: mdi:fan-chevron-up
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_b1) = (uint8_t)x;'
+  - platform: template
+    name: "% Wywiew Bieg 1"
+    id: n_wyw_b1
+    icon: mdi:fan-chevron-down
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_b1) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Nawiew Bieg 2"
+    id: n_naw_b2
+    icon: mdi:fan-chevron-up
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_b2) = (uint8_t)x;'
+  - platform: template
+    name: "% Wywiew Bieg 2"
+    id: n_wyw_b2
+    icon: mdi:fan-chevron-down
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_b2) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Nawiew Bieg 3"
+    id: n_naw_b3
+    icon: mdi:fan-chevron-up
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_b3) = (uint8_t)x;'
+  - platform: template
+    name: "% Wywiew Bieg 3"
+    id: n_wyw_b3
+    icon: mdi:fan-chevron-down
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_b3) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Nawiew Wietrzenie"
+    id: n_naw_wiet
+    icon: mdi:fan-chevron-up
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_wiet) = (uint8_t)x;'
+  - platform: template
+    name: "% Wywiew Wietrzenie"
+    id: n_wyw_wiet
+    icon: mdi:fan-chevron-down
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_wiet) = (uint8_t)x;'
+
+sensor:
+  - platform: template
+    name: "T.Czerpnia"
+    id: s_czerp
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "T.Nawiew"
+    id: s_nawiew
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "T.Wyrzut"
+    id: s_wyrzut
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "T.Wywiew"
+    id: s_wywiew
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "Nawiew %"
+    id: s_naw_pct
+    unit_of_measurement: "%"
+    icon: mdi:fan-chevron-up
+    accuracy_decimals: 0
+    filters: [{delta: 1}]
+  - platform: template
+    name: "Wywiew %"
+    id: s_wyw_pct
+    unit_of_measurement: "%"
+    icon: mdi:fan-chevron-down
+    accuracy_decimals: 0
+    filters: [{delta: 1}]
+    
+  - platform: template
+    name: "C14 Cycles"
+    accuracy_decimals: 0
+    update_interval: 10s
+    entity_category: diagnostic
+    lambda: 'return id(g_cycle_count);'
+  - platform: template
+    name: "C14 AERO Responses"
+    accuracy_decimals: 0
+    update_interval: 10s
+    entity_category: diagnostic
+    lambda: 'return id(g_aero_resp_total);'
+
+text_sensor:
+  - platform: template
+    name: "Bieg aktualny"
+    id: ts_bieg
+    icon: mdi:fan
+  - platform: template
+    name: "Bypass aktualny"
+    id: ts_bypass
+    icon: mdi:valve
+
+binary_sensor:
+  - platform: template
+    name: "Wentylator"
+    id: bs_fan
+    device_class: running

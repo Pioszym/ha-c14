@@ -1,0 +1,340 @@
+substitutions:
+  device_name: esp02
+  friendly_name: "C14 Bridge"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+api:
+  encryption:
+    key: !secret esp02_api
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+packages:
+  wifi: !include packages/wifi_Pioszym_IoT.yaml
+  device_base: !include packages/device_base.yaml
+
+################################################################################
+# C14 MITM BRIDGE — 2x hardware UART na ESP32
+# UART_NANO (GPIO4 RX, GPIO18 TX)  -> strona Nano Color CTP
+# UART_AERO (GPIO16 RX, GPIO17 TX) -> strona AERO 3B
+#
+# Logika: kazdy bajt z jednej strony -> buforuj do konca ramki (0x23 @ pos>=29)
+#   -> log [NANO>] lub [AERO>] -> forward na druga strone
+# Filtr echa: po TX N bajtow, skip N bajtow z RX tej strony (auto-direction RS-485
+#   modul zwraca wlasne TX na RX).
+#
+# Test "Nano bez AERO":
+#   - rozlacz fizycznie kabel od AERO
+#   - normalnie NANO> ma src=0x21, AERO> ma src=0x44
+#   - jesli pojawi sie [NANO>] z src=0x44 -> Nano generuje cached odpowiedzi
+################################################################################
+
+uart:
+  - id: uart_nano
+    rx_pin: GPIO4
+    tx_pin: GPIO18
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+  - id: uart_aero
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
+
+globals:
+  - id: g_nano_buf
+    type: uint8_t[32]
+  - id: g_nano_pos
+    type: uint8_t
+    initial_value: "0"
+  - id: g_aero_buf
+    type: uint8_t[32]
+  - id: g_aero_pos
+    type: uint8_t
+    initial_value: "0"
+  - id: g_nano_skip
+    type: int
+    initial_value: "0"
+  - id: g_aero_skip
+    type: int
+    initial_value: "0"
+  - id: g_bridge_on
+    type: bool
+    initial_value: "true"
+  - id: g_forward_on
+    type: bool
+    initial_value: "true"
+  - id: g_cnt_nano
+    type: uint32_t
+    initial_value: "0"
+  - id: g_cnt_aero
+    type: uint32_t
+    initial_value: "0"
+  - id: g_cnt_phantom
+    type: uint32_t
+    initial_value: "0"
+  - id: g_echo_filter_on
+    type: bool
+    initial_value: "false"   # WYLACZONE dla diagnostyki
+  - id: g_aero_raw_on
+    type: bool
+    initial_value: "false"   # raw AERO domyslnie off (diagnostyka zakonczona)
+  - id: g_aero_raw_buf
+    type: uint8_t[128]
+  - id: g_aero_raw_pos
+    type: uint8_t
+    initial_value: "0"
+  - id: g_nano_raw_on
+    type: bool
+    initial_value: "false"   # raw NANO domyslnie off (duzy traffic)
+  - id: g_nano_raw_buf
+    type: uint8_t[128]
+  - id: g_nano_raw_pos
+    type: uint8_t
+    initial_value: "0"
+
+interval:
+  - interval: 100ms
+    then:
+      - lambda: |-
+          if (!id(g_bridge_on)) return;
+
+          // ========== NANO side ==========
+          {
+            uint8_t b;
+            int reads = 0;
+            while (id(uart_nano).available() && reads++ < 256) {
+              if (!id(uart_nano).read_byte(&b)) break;
+              if (id(g_echo_filter_on) && id(g_nano_skip) > 0) {
+                id(g_nano_skip)--;
+                continue;
+              }
+              // RAW dump NANO - kazdy bajt
+              if (id(g_nano_raw_on) && id(g_nano_raw_pos) < 128) {
+                id(g_nano_raw_buf)[id(g_nano_raw_pos)] = b;
+                id(g_nano_raw_pos)++;
+              }
+              if (id(g_nano_pos) < 32) {
+                id(g_nano_buf)[id(g_nano_pos)] = b;
+                id(g_nano_pos)++;
+              }
+              if (b == 0x23 && id(g_nano_pos) >= 30) {
+                uint8_t len = id(g_nano_pos);
+                uint8_t *f = id(g_nano_buf);
+                char h[120]; int p = 0;
+                for (int i = 0; i < len && p < 110; i++)
+                  p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                ESP_LOGW("bridge", "[NANO>] %02X(%02X) src=%02X len=%d [%s]",
+                  f[0], f[3], f[1], len, h);
+                if (id(g_forward_on)) {
+                  id(uart_aero).write_array(f, len);
+                  id(g_aero_skip) += len;
+                }
+                id(g_cnt_nano)++;
+                id(g_nano_pos) = 0;
+              }
+              if (id(g_nano_pos) >= 32) id(g_nano_pos) = 0;
+            }
+          }
+
+          // ========== AERO side ==========
+          {
+            uint8_t b;
+            int reads = 0;
+            while (id(uart_aero).available() && reads++ < 256) {
+              if (!id(uart_aero).read_byte(&b)) break;
+              // Echo filter tylko jesli wlaczony
+              if (id(g_echo_filter_on) && id(g_aero_skip) > 0) {
+                id(g_aero_skip)--;
+                continue;
+              }
+              // RAW dump - kazdy bajt trafia do raw bufora
+              if (id(g_aero_raw_on) && id(g_aero_raw_pos) < 128) {
+                id(g_aero_raw_buf)[id(g_aero_raw_pos)] = b;
+                id(g_aero_raw_pos)++;
+              }
+              if (id(g_aero_pos) < 32) {
+                id(g_aero_buf)[id(g_aero_pos)] = b;
+                id(g_aero_pos)++;
+              }
+              if (b == 0x23 && id(g_aero_pos) >= 30) {
+                uint8_t len = id(g_aero_pos);
+                uint8_t *f = id(g_aero_buf);
+                char h[120]; int p = 0;
+                for (int i = 0; i < len && p < 110; i++)
+                  p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                ESP_LOGW("bridge", "[AERO>] %02X(%02X) src=%02X len=%d [%s]",
+                  f[0], f[3], f[1], len, h);
+                if (id(g_forward_on)) {
+                  id(uart_nano).write_array(f, len);
+                  id(g_nano_skip) += len;
+                }
+                id(g_cnt_aero)++;
+                id(g_aero_pos) = 0;
+              }
+              if (id(g_aero_pos) >= 32) id(g_aero_pos) = 0;
+            }
+          }
+
+  # Podsumowanie co 10s
+  - interval: 10s
+    then:
+      - lambda: |-
+          ESP_LOGW("bridge", "=== STATS: NANO>=%u, AERO>=%u, PHANTOM=%u, fwd=%s echo=%s raw=%s ===",
+            id(g_cnt_nano), id(g_cnt_aero), id(g_cnt_phantom),
+            id(g_forward_on) ? "ON" : "OFF",
+            id(g_echo_filter_on) ? "ON" : "OFF",
+            id(g_aero_raw_on) ? "ON" : "OFF");
+
+  # RAW dump obu stron co 500ms - widzimy co fizycznie leci
+  - interval: 500ms
+    then:
+      - lambda: |-
+          if (id(g_aero_raw_on) && id(g_aero_raw_pos) > 0) {
+            uint8_t n = id(g_aero_raw_pos);
+            uint8_t *b = id(g_aero_raw_buf);
+            char h[400]; int p = 0;
+            for (int i = 0; i < n && p < 390; i++)
+              p += snprintf(h+p, 400-p, "%s%02X", i?" ":"", b[i]);
+            ESP_LOGW("bridge", "[AERO RAW n=%u] %s", n, h);
+            id(g_aero_raw_pos) = 0;
+          }
+          if (id(g_nano_raw_on) && id(g_nano_raw_pos) > 0) {
+            uint8_t n = id(g_nano_raw_pos);
+            uint8_t *b = id(g_nano_raw_buf);
+            char h[400]; int p = 0;
+            for (int i = 0; i < n && p < 390; i++)
+              p += snprintf(h+p, 400-p, "%s%02X", i?" ":"", b[i]);
+            ESP_LOGW("bridge", "[NANO RAW n=%u] %s", n, h);
+            id(g_nano_raw_pos) = 0;
+          }
+
+switch:
+  - platform: template
+    name: "Bridge Enable"
+    id: sw_bridge
+    icon: mdi:bridge
+    optimistic: true
+    restore_mode: ALWAYS_ON
+    turn_on_action:
+      - lambda: |-
+          id(g_bridge_on) = true;
+          id(g_nano_pos) = 0; id(g_aero_pos) = 0;
+          id(g_nano_skip) = 0; id(g_aero_skip) = 0;
+          ESP_LOGW("bridge","=== BRIDGE ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_bridge_on) = false;
+          ESP_LOGW("bridge","=== BRIDGE OFF (sniff/fwd zatrzymany) ===");
+
+  - platform: template
+    name: "Bridge Forward"
+    id: sw_forward
+    icon: mdi:swap-horizontal
+    optimistic: true
+    restore_mode: ALWAYS_ON
+    turn_on_action:
+      - lambda: |-
+          id(g_forward_on) = true;
+          ESP_LOGW("bridge","=== FORWARD ON (pelny bridge) ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_forward_on) = false;
+          ESP_LOGW("bridge","=== FORWARD OFF (tylko sniff, strony odciete) ===");
+
+  - platform: template
+    name: "Bridge Echo Filter"
+    id: sw_echo
+    icon: mdi:filter
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_echo_filter_on) = true;
+          id(g_nano_skip) = 0; id(g_aero_skip) = 0;
+          ESP_LOGW("bridge","=== ECHO FILTER ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_echo_filter_on) = false;
+          id(g_nano_skip) = 0; id(g_aero_skip) = 0;
+          ESP_LOGW("bridge","=== ECHO FILTER OFF (wszystkie bajty parsowane) ===");
+
+  - platform: template
+    name: "Bridge AERO RAW"
+    id: sw_aero_raw
+    icon: mdi:console
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_aero_raw_on) = true;
+          id(g_aero_raw_pos) = 0;
+          ESP_LOGW("bridge","=== AERO RAW DUMP ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_aero_raw_on) = false;
+          ESP_LOGW("bridge","=== AERO RAW DUMP OFF ===");
+
+  - platform: template
+    name: "Bridge NANO RAW"
+    id: sw_nano_raw
+    icon: mdi:console-line
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_nano_raw_on) = true;
+          id(g_nano_raw_pos) = 0;
+          ESP_LOGW("bridge","=== NANO RAW DUMP ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_nano_raw_on) = false;
+          ESP_LOGW("bridge","=== NANO RAW DUMP OFF ===");
+
+button:
+  - platform: template
+    name: "Bridge Reset Counters"
+    id: btn_reset
+    icon: mdi:refresh
+    on_press:
+      - lambda: |-
+          id(g_cnt_nano) = 0;
+          id(g_cnt_aero) = 0;
+          id(g_cnt_phantom) = 0;
+          ESP_LOGW("bridge","=== COUNTERS RESET ===");
+
+sensor:
+  - platform: template
+    name: "Bridge NANO frames"
+    id: s_cnt_nano
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: 'return id(g_cnt_nano);'
+  - platform: template
+    name: "Bridge AERO frames"
+    id: s_cnt_aero
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: 'return id(g_cnt_aero);'
+  - platform: template
+    name: "Bridge PHANTOM frames"
+    id: s_cnt_phantom
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: 'return id(g_cnt_phantom);'
