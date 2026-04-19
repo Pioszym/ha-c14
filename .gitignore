@@ -1,0 +1,6 @@
+*.log
+logs_*.txt
+packages/
+secrets.yaml
+*.swp
+.DS_Store
