@@ -12,6 +12,12 @@ Reverse engineering magistrali RS-485 między rekuperatorem **COMPIT AERO 3B** a
 - Master: Nano Color CTP (tryb **MASTER MINI** — 11 ramek/cykl ~8.5s)
 - Slave główny: AERO 3B (odpowiada tylko na trigger)
 
+### Uwagi o RS-485 transceiverach
+
+- **HW-0519 (auto-direction, 3.3V)** używane w projekcie **nie echują TX na RX** — chip blokuje RO podczas TX. Echo filter w kodzie **niepotrzebny**.
+- Moduły z pinem DE/RE (np. MAX485) echują jeśli pin nie jest poprawnie sterowany — dla nich trzeba filtrować lub używać GPIO do przełączania kierunku.
+- Przy `auto-direction` slot po TX musi być minimum kilka ms (chip potrzebuje czasu na przełączenie), ale dla 800ms slot AERO odpowiedź (400ms) zmieściła się bez problemu.
+
 ## Adresy / markery typu ramki (f[1])
 
 **UWAGA:** `f[1]` to **marker typu ramki**, NIE adres źródłowy.
@@ -80,6 +86,34 @@ Odwrócona kolejność: iNEXT pierwsze (rezerwacja slotu), QUERY na końcu żeby
 | 10 | E3(29) src=0x44 | **QUERY — trigger AERO** (ostatnia) |
 
 AERO odpowiada E4(63) ~400ms po #10. AERO nadaje **tylko E4(63)** w całym cyklu.
+
+### Timing odpowiedzi AERO (zmierzone przez bridge MITM)
+
+| Czas (względny) | Zdarzenie |
+|-----------------|-----------|
+| t+0.0s | Nano wysyła E4(29) |
+| t+0.7s | Nano wysyła E3(29) src=0x44 (trigger) |
+| t+1.1s | **AERO odpowiada E4(63)** (~400ms po triggerze) |
+| t+1.6s – 7.5s | Reszta ramek Nano (broadcasty) |
+
+Dla ESP-mastera: po wysłaniu E3(29)_44 wystarczy slot **≥500ms** na nasłuch E4(63).
+
+### Test triggera (definitywne potwierdzenie 2026-04-15)
+
+Test `esp32_test.yaml`: 10 switchy, każdy wysyła jedną ramkę z cyklu. Wyniki:
+- Wszystkie OFF → AERO milczy
+- Każda ramka pojedynczo ON (E3(56), E2, E5, F0, 81, D0-D2, **nawet E4(29)**) → AERO dalej milczy
+- **E3(29) src=0x44 ON → AERO natychmiast odpowiada E4(63)**
+
+Minimalna ramka triggerująca:
+```
+E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,53,23
+```
+
+Podział ról potwierdzony:
+- **E4(29) src=0x21** — komenda biegu (AERO reaguje **mechanicznie** — zmienia wentylator, ale NIE odpowiada ramką)
+- **E3(29) src=0x44** — **TRIGGER** dla E4(63) response
+- Pozostałe 8 ramek — broadcasty dla innych slaves (iNext, EX4), AERO ignoruje
 
 ---
 
@@ -216,6 +250,8 @@ E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECO_H],[ECO_L],[CHL_H],[CHL_
 | `0x61` | AUTO | Decyduje autonomicznie po temp (autonomous mode) |
 | `0x62` | Manual ON | Otwiera natychmiast (f[28] E4(63) = 0x60) |
 
+**Ambiguity w odpowiedzi AERO:** AERO E4(63) f[28] pokazuje **stan fizyczny** (`0x40` zamknięty / `0x60` otwarty), nie komendę. Gdy komenda = AUTO, a AERO zdecyduje "zamknij" — ramka AERO wygląda **identycznie** jak przy manual OFF. Żeby rozróżnić tryb wysłany, trzymaj stan komendy po stronie mastera (np. `g_bypass_cmd` w esp02.yaml), nie próbuj wywnioskować z odpowiedzi AERO.
+
 ### Sezon (f[27]) — 3-stanowy enum
 | Kod | Sezon |
 |-----|-------|
@@ -280,9 +316,9 @@ Prawie puste: `81,44,5F,29,7E×25,23`.
 ```
 D0/D1/D2,44,[cks],29,53,4B,41,07,68,07,04,00,6E,00,5A,7E×14,23
 ```
-- `f[4-6]` = ASCII "SKA" (wendor?)
-- `f[7-14]` = stałe dane config (rola nieznana)
-- Różni się tylko `f[0]` i `f[2]` (cksum)
+- `f[4-6]` = `0x53,0x4B,0x41` = **ASCII "SKA"** — prawdopodobnie model/vendor string COMPIT (znaczenie nieznane — być może "SKALAR" lub kod rodziny sterowników)
+- `f[7-14]` = stałe dane config (rola nieznana — prawdopodobnie slot/adres slave'ów w konfiguracji AERO)
+- Różni się tylko `f[0]` (D0/D1/D2) i `f[2]` (cksum)
 
 ### E3(29) src=0x56 — iNEXT slot
 Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.

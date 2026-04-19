@@ -4,7 +4,8 @@ ESP32 jako master/bridge na magistrali C14 (COMPIT/PRO-VENT) do rekuperatora AER
 
 ## Pliki
 
-- **[PROTOCOL.md](PROTOCOL.md)** — pełna dokumentacja reverse engineering protokołu C14 (mapa ramek, kodowanie, checksum)
+- **[PROTOCOL.md](PROTOCOL.md)** — pełna dokumentacja reverse engineering protokołu C14 (mapa ramek, kodowanie, checksum, timing)
+- **[HISTORY.md](HISTORY.md)** — historia debugowania, fałszywe tropy, lekcje (ESP8266 phantom 0xFF, kolizja slotu, bufor, checksum K)
 - `esphome/esp02.yaml` — ESP32 master + bridge (wdrożone na HA jako `esp02`)
 - `esphome/esp02_bridge.yaml` — czysty bridge MITM (diagnostyka, bez master TX)
 
