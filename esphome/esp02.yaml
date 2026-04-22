@@ -86,7 +86,12 @@ globals:
     initial_value: "0"
   - id: g_master_on
     type: bool
-    initial_value: "true"    # default ON
+    restore_value: true
+    initial_value: "true"    # default ON, sterowane z select.c14_rola
+  - id: g_slave_on
+    type: bool
+    restore_value: true
+    initial_value: "false"   # sterowane z select.c14_rola
   - id: g_forward_on
     type: bool
     initial_value: "false"   # domyslnie OFF zeby nie kolidowal z masterem
@@ -684,6 +689,39 @@ script:
                            0x00,0x00,0x00,0x00,0x00,0x23 };
             - delay: 800ms
 
+  # Slave response — ESP emuluje Nano slave id=2, odpowiada E4(2A) po wake-up'ie AA(29) src=0x44
+  # Struktura ramki skopiowana z obserwowanego Nano slave:
+  #   f[3]=0x2A (id=2), f[4]=0x0A, f[7]=0x02 (stałe), f[8-9]=zegar,
+  #   f[12-13]=pokojowy, f[14-15]=Eko setpoint, f[25-26]=rotator, f[27]=0x00, f[28]=0x43
+  - id: slave_respond
+    mode: single
+    then:
+      - delay: 400ms   # typowy delay Nano slave po AA(44)
+      - if:
+          condition:
+            lambda: 'return id(g_slave_on);'
+          then:
+            - lambda: |-
+                std::vector<uint8_t> f = {
+                  0xE4,0x21,0x00,0x2A,0x0A,0x40,0x00,0x02,0x08,0x2E,0x7E,0x00,
+                  0x11,0x12,0x11,0x22,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                  0x14,0x64,0x01,0x1A,0x00,0x43,0x23 };
+                auto t = id(ha_time).now();
+                if (t.is_valid()) {
+                  f[8] = t.hour & 0xFF;
+                  f[9] = t.minute & 0xFF;
+                }
+                uint16_t s = f[0] + f[1];
+                for (int i = 3; i <= 28; i++) s += f[i];
+                f[2] = (s + 0xA3) & 0xFF;
+                id(uart_aero).write_array(f.data(), f.size());
+                id(uart_nano).write_array(f.data(), f.size());
+                if (id(g_log_esp)) {
+                  char h[120]; int p = 0;
+                  for (size_t i = 0; i < f.size() && p < 110; i++)
+                    p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                  ESP_LOGW("c14m", ">>> SLAVE_E4_2A %s", h);
+                }
 
 interval:
   # RX parser dla uart_aero — loguje AERO E4(63) + cache temperatur
@@ -783,6 +821,10 @@ interval:
                   f[0], f[3], f[1], h);
               }
               // Nano E3(29)_44 -> tylko do podgladu/logu, slidery nie nadpisywane
+              // Slave wake-up: AA(29) src=0x44 od Nano master → ESP odpowiada E4(2A)
+              if (f[0] == 0xAA && f[1] == 0x44 && f[3] == 0x29 && id(g_slave_on)) {
+                id(slave_respond).execute();
+              }
               id(g_cnt_nano)++;
               // Forward do AERO jesli aktywny I master jest OFF (inaczej kolizja)
               if (id(g_forward_on) && !id(g_master_on)) {
@@ -793,12 +835,21 @@ interval:
             if (id(g_nano_pos) >= 32) id(g_nano_pos) = 0;
           }
 
-  # Cykl co 8500ms (jak Nano), 10 ramek × 800ms = 7.5s + 1s margines
+  # Mini tempo (8.5s cykl) — master_on=ON i master_full=OFF
   - interval: 8500ms
     then:
       - if:
           condition:
-            lambda: 'return id(g_master_on);'
+            lambda: 'return id(g_master_on) && !id(g_master_full);'
+          then:
+            - script.execute: master_cycle
+
+  # Full tempo (22.5s cykl) — master_on=ON i master_full=ON
+  - interval: 22500ms
+    then:
+      - if:
+          condition:
+            lambda: 'return id(g_master_on) && id(g_master_full);'
           then:
             - script.execute: master_cycle
 
@@ -867,27 +918,6 @@ switch:
           ESP_LOGW("c14m","=== LOG ESP OFF ===");
 
   - platform: template
-    name: "C14 Master ON"
-    id: sw_master
-    icon: mdi:swap-horizontal-bold
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
-    turn_on_action:
-      - lambda: |-
-          if (id(g_forward_on)) {
-            ESP_LOGW("c14m","!!! Wylaczam forward (kolizja z masterem na AERO) !!!");
-            id(g_forward_on) = false;
-          }
-          id(g_master_on) = true;
-          id(g_cycle_count) = 0;
-          id(g_aero_resp_total) = 0;
-          ESP_LOGW("c14m","=== MASTER MODE ON (cykl 6s) ===");
-    turn_off_action:
-      - lambda: |-
-          id(g_master_on) = false;
-          ESP_LOGW("c14m","=== MASTER MODE OFF ===");
-
-  - platform: template
     name: "C14 Master Full"
     id: sw_master_full
     icon: mdi:format-list-numbered
@@ -918,6 +948,36 @@ switch:
           ESP_LOGW("c14m","=== Wietrzenie OFF ===");
 
 select:
+  - platform: template
+    name: "C14 Rola"
+    id: sel_rola
+    icon: mdi:account-switch
+    options: ["OFF", "Master", "Slave"]
+    initial_option: "Master"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if (x == "Master") {
+            if (id(g_forward_on)) {
+              ESP_LOGW("c14m","!!! Wylaczam forward (kolizja z masterem) !!!");
+              id(g_forward_on) = false;
+            }
+            id(g_master_on) = true;
+            id(g_slave_on) = false;
+            id(g_cycle_count) = 0;
+            id(g_aero_resp_total) = 0;
+            ESP_LOGW("c14m","=== ROLA: MASTER ===");
+          } else if (x == "Slave") {
+            id(g_master_on) = false;
+            id(g_slave_on) = true;
+            ESP_LOGW("c14m","=== ROLA: SLAVE id=2 (E4(2A) po AA(44)) ===");
+          } else {
+            id(g_master_on) = false;
+            id(g_slave_on) = false;
+            ESP_LOGW("c14m","=== ROLA: OFF (pasywny) ===");
+          }
+
   - platform: template
     name: "Bieg"
     id: sel_gear
