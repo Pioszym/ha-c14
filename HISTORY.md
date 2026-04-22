@@ -87,6 +87,50 @@ Podstawa: pierwotna iteracja esp02.yaml używała 0x23 dla E5/E3(44) i **czasami
 3. **Zmiana jednego pola na Nano → obserwacja różnic w ramkach** — systematyczne mapowanie setpointów, trybów, bypass
 4. **Test triggera button-per-frame** — ekskluzywna weryfikacja która ramka wywołuje odpowiedź AERO (odkryło że E3(29)_44 jest jedynym triggerem)
 
+## Odkrycie triggera przez button-per-frame test (2026-04-15)
+
+Przez tygodnie zakładaliśmy, że AERO odpowiada ramką E4(63) na pełny cykl mastera, a nie pojedynczy trigger. Próba izolowania konkretnej ramki-triggera była niemożliwa bo wszystkie 10 ramek Nano leciały w cyklu non-stop.
+
+**Rozwiązanie:** osobny yaml `esp32_test.yaml` z 10 switchami HA — każdy switch generuje jedną konkretną ramkę (z hardcoded bajtami z snapshota Nano). Reszta ramek cyklu wyłączona. Obserwacja odpowiedzi AERO:
+
+| Włączone | AERO reaguje? |
+|----------|---------------|
+| Wszystkie OFF (baseline) | Nie, cisza |
+| Pojedynczo: E3(56), E2, E5, F0, 81, D0, D1, D2 | Nie |
+| Pojedynczo: E4(29) | Nie (AERO zmienia wentylator mechanicznie, ale nie odpowiada ramką) |
+| Pojedynczo: **E3(29) src=0x44** | **TAK — E4(63) w ~400ms** |
+
+To była kluczowa weryfikacja że E3(29)_44 jest jedynym triggerem. Pozostałe ramki są broadcastami dla innych urządzeń (iNEXT, Nano-slave, EX4) i AERO je ignoruje.
+
+**Lekcja:** jeśli protokół ma wiele ramek, izolować każdą niezależnie zamiast wnioskować z korelacji w pełnym cyklu.
+
+## Dekodowanie programów — Normal/Poza Domem/Urlop (2026-04-22)
+
+Nano ma 3 programy w menu TRYB PRACY: harmonogram / poza domem / urlop. Z wizualizacji użytkownika wyglądają jak 3 różne tryby, ale test bridge MITM ujawnił zaskakujące zachowanie:
+
+1. **Normal** — ramki E4(29) f[5]=0x44, f[28]=0x03 (baseline)
+2. **Poza Domem włączone** — **ramki identyczne jak Normal**, żadna zmiana w protokole
+3. **Urlop włączone** — f[5]=0x40 (bit 2 reset), f[28]=0x02 — jedyna programowa zmiana
+
+**Wniosek:** Poza Domem to **tylko lokalny override na Nano** — Nano wewnętrznie zmienia aktywny setpoint temperatury na "Poza Domem" (np. 20°C), ale protokołowi C14 nic nie komunikuje. Harmonogram dalej się wykonuje, tylko z niższą temperaturą celu.
+
+**Urlop** jest właściwym broadcastem "ignore schedule" — AERO widzi f[5]&0x04=0 i przełącza się w tryb utrzymania stałego setpointu.
+
+**Lekcja:** nie wszystko co jest w UI jest w protokole. Część logiki może być lokalna w jednostce sterującej i nie być transmitowana. Przed szukaniem "brakującego bitu" zawsze sprawdzić czy w ogóle coś się zmienia na magistrali.
+
+## Master Full budzi Nano slave (2026-04-22)
+
+Po dodaniu trybu Master Full do ESP (27 ramek zamiast 10) zauważyliśmy że Nano w trybie slave id=2 **zaczyna nadawać E4(2A) i inne ramki**, podczas gdy w Master Mini był całkowicie cichy.
+
+**Hipoteza robocza:** jedna z 17 ramek Full jest "wake-up" dla Nano slave. Kandydaci:
+- D3/D4/D5 — slave config rozszerzony
+- 8B/9F/82/8C/8D/8E/95 — heartbeaty dla rzadkich slave ID
+- AA/AB/AC × (src=0x44 + src=0x56) — broadcasty dual-address
+
+**Analogia do odkrycia triggera AERO:** Nano slave też czeka na konkretną ramkę zanim się aktywuje, podobnie jak AERO czeka na E3(29)_44.
+
+**TODO test połówkowy:** dodać switche grupowe (`full_grp_d`, `full_grp_8x`, `full_grp_a`), wyłączać grupy po kolei i obserwować kiedy Nano slave zamilknie. To wskaże konkretny trigger.
+
 ## Co zostało otwarte (do przyszłych sesji)
 
 - **E5(29) f[18-19]** (`00,30` stałe) — nie reaguje na lato/zima/chłodzenie ani bypass. Może parametr konfiguracyjny (histereza, korekta temperatury)?

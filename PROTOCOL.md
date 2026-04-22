@@ -105,52 +105,81 @@ Nano sekwencja: komenda biegu najpierw, trigger QUERY zaraz po, potem reszta bro
 | 10 | D1(29) src=0x44 | Nano | Slave config 2 |
 | 11 | D2(29) src=0x44 | Nano | Slave config 3 |
 
-### ESP Master (esp02.yaml) — zaimplementowane
+### Nano Master Full (27 ramek, ~22s) — obserwowane
 
-Odwrócona kolejność: iNEXT pierwsze (rezerwacja slotu), QUERY na końcu żeby AERO miała świeże nastawy. 10 ramek × 800ms = 8s cykl, interval 8500ms.
+Master Full to rozszerzona wersja Mini, aktywowana w menu serwisowym Nano (TRYB W SIECI C14 = MASTER). Dodaje 17 ramek enumeration/keepalive dla rzadkich slave ID. **E3(29)_44 występuje DWA razy w cyklu** — AERO odpowiada E4(63) dwukrotnie per cykl (~10s + ~13s split).
+
+Pełna sekwencja (po #1-10 identyczne jak Mini):
 
 | # | Ramka | Rola |
 |---|-------|------|
-| 1 | E3(29) src=0x56 | iNEXT slot (rezerwacja) |
-| 2 | E2(29) src=0x44 | Status broadcast |
-| 3 | E5(29) src=0x21 | Setpointy temp + bypass + sezon |
-| 4 | F0(29) src=0x44 | Heartbeat |
-| 5 | 81(29) src=0x44 | Heartbeat Nano |
-| 6 | D0(29) src=0x44 | Slave config 1 |
-| 7 | D1(29) src=0x44 | Slave config 2 |
-| 8 | D2(29) src=0x44 | Slave config 3 |
-| 9 | E4(29) src=0x21 | Komenda biegu + zegar + sezon + wietrzenie |
-| 10 | E3(29) src=0x44 | **QUERY — trigger AERO** (ostatnia) |
+| 1-10 | (jak Master Mini) | |
+| 11 | D3(29) src=0x44 | Slave config 4 |
+| 12 | D4(29) src=0x44 | Slave config 5 |
+| 13 | D5(29) src=0x44 | Slave config 6 |
+| 14 | E3(29) src=0x44 | **Drugi QUERY** — identyczny jak #2 |
+| 15 | 8B(29) src=0x44 | Heartbeat slave ID 0x8B (0x7E fill) |
+| 16 | 9F(29) src=0x44 | Heartbeat 0x9F |
+| 17 | 82(29) src=0x44 | Heartbeat 0x82 |
+| 18 | 8C(29) src=0x44 | Heartbeat 0x8C |
+| 19 | 8D(29) src=0x44 | Heartbeat 0x8D |
+| 20 | 8E(29) src=0x44 | Heartbeat 0x8E |
+| 21 | 95(29) src=0x44 | Heartbeat 0x95 |
+| 22 | AA(29) src=0x44 | Broadcast 0xAA master-side (0x7E fill) |
+| 23 | AA(29) src=0x56 | Broadcast 0xAA iNEXT-side (0x00 fill) |
+| 24 | AB(29) src=0x44 | Broadcast 0xAB master-side |
+| 25 | AB(29) src=0x56 | Broadcast 0xAB iNEXT-side |
+| 26 | AC(29) src=0x44 | Broadcast 0xAC master-side |
+| 27 | AC(29) src=0x56 | Broadcast 0xAC iNEXT-side |
 
-AERO odpowiada E4(63) ~400ms po #10. AERO nadaje **tylko E4(63)** w całym cyklu.
+**Wszystkie 17 dodatkowych ramek mają zawartość statyczną** (0x7E lub 0x00 fill) — enumeration/keepalive, bez użytecznych danych. Jednak Master Full jest **wymagany** żeby Nano w trybie slave zaczął aktywnie komunikować się na magistrali (w Mini Nano slave jest całkowicie cichy).
+
+### ESP Master (esp02.yaml) — zaimplementowane
+
+Kolejność zgodna z Nano Master Mini: E4 pierwsze, QUERY drugie, reszta broadcastów. 10 ramek × 800ms = 8s cykl, interval 8500ms. Opcjonalny tryb Full (switch `c14_master_full`) rozszerza cykl do 27 ramek jak Nano Master Full.
+
+| # | Ramka | Rola |
+|---|-------|------|
+| 1 | E4(29) src=0x21 | Komenda biegu + zegar + sezon + wietrzenie |
+| 2 | E3(29) src=0x44 | **QUERY — trigger AERO** |
+| 3 | E3(29) src=0x56 | iNEXT slot (rezerwacja) |
+| 4 | E2(29) src=0x44 | Status broadcast |
+| 5 | E5(29) src=0x21 | Setpointy temp + bypass + sezon |
+| 6 | F0(29) src=0x44 | Heartbeat |
+| 7 | 81(29) src=0x44 | Heartbeat Nano |
+| 8-10 | D0/D1/D2(29) src=0x44 | Slave config |
+| 11-27 | (tylko gdy `c14_master_full=ON`) | Ramki Master Full |
+
+AERO odpowiada E4(63) ~400ms po ramce QUERY. W trybie Full AERO odpowiada 2× per cykl (po #2 i po #14).
 
 ### Timing odpowiedzi AERO (zmierzone przez bridge MITM)
 
 | Czas (względny) | Zdarzenie |
 |-----------------|-----------|
-| t+0.0s | Nano wysyła E4(29) |
-| t+0.7s | Nano wysyła E3(29) src=0x44 (trigger) |
-| t+1.1s | **AERO odpowiada E4(63)** (~400ms po triggerze) |
-| t+1.6s – 7.5s | Reszta ramek Nano (broadcasty) |
+| t+0.0s | Master wysyła E4(29) |
+| t+0.8s | Master wysyła E3(29) src=0x44 (trigger) |
+| t+1.2s | **AERO odpowiada E4(63)** (~400ms po triggerze) |
+| t+1.6s – koniec | Reszta ramek mastera (broadcasty, enumeration) |
+
+W Master Full drugi trigger #14 → druga odpowiedź AERO w t+~11s.
 
 Dla ESP-mastera: po wysłaniu E3(29)_44 wystarczy slot **≥500ms** na nasłuch E4(63).
 
-### Test triggera (definitywne potwierdzenie 2026-04-15)
+### Role ramek w cyklu
 
-Test `esp32_test.yaml`: 10 switchy, każdy wysyła jedną ramkę z cyklu. Wyniki:
-- Wszystkie OFF → AERO milczy
-- Każda ramka pojedynczo ON (E3(56), E2, E5, F0, 81, D0-D2, **nawet E4(29)**) → AERO dalej milczy
-- **E3(29) src=0x44 ON → AERO natychmiast odpowiada E4(63)**
+| Ramka | Efekt po stronie AERO |
+|-------|----------------------|
+| **E4(29) src=0x21** | Komenda biegu — AERO reaguje mechanicznie (zmienia wentylator), NIE odpowiada ramką |
+| **E3(29) src=0x44** | **TRIGGER** dla odpowiedzi E4(63). Wystarczy ta jedna ramka żeby AERO odpowiedziało |
+| E3(29) src=0x56 | iNEXT slot (ignorowana przez AERO) |
+| E2, E5, F0, 81, D0-D2 | Broadcasty dla slaves (iNEXT, EX4, Nano-slave) — AERO ignoruje |
 
-Minimalna ramka triggerująca:
+Minimalna ramka triggerująca odpowiedź AERO:
 ```
 E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,53,23
 ```
 
-Podział ról potwierdzony:
-- **E4(29) src=0x21** — komenda biegu (AERO reaguje **mechanicznie** — zmienia wentylator, ale NIE odpowiada ramką)
-- **E3(29) src=0x44** — **TRIGGER** dla E4(63) response
-- Pozostałe 8 ramek — broadcasty dla innych slaves (iNext, EX4), AERO ignoruje
+(Zobacz [HISTORY.md](HISTORY.md) — sekcja "Odkrycie triggera przez button-per-frame test" dla procesu weryfikacji.)
 
 ---
 
@@ -220,26 +249,24 @@ Bit 0 = validity flag (zawsze set), bity 1-2 = value biegu (0-3):
 
 **Uwaga:** AERO reaguje mechanicznie **tylko na bity 1-2** (value biegu). Bit `0x40` (harmonogram) i `0x08` (chłodzenie) ignoruje przy decyzji o prędkości wentylatora — ale może mieć znaczenie dla innych slaves (iNext).
 
-### Programy — Normal / Poza domem / Urlop (test 2026-04-22)
+### Programy trybu pracy — kodowanie w E4(29)
 
-Nano ma 3 programy dostępne z TRYB PRACY (ikony: 🕐 harmonogram, 🏠🚶 poza domem, 🧳 urlop). Test przełączania tych programów pokazuje:
+Nano oferuje 3 programy użytkownika (TRYB PRACY): 🕐 Normal/Harmonogram, 🏠🚶 Poza Domem, 🧳 Urlop. Z punktu widzenia protokołu:
 
-| Program | f[5] | f[28] | Uwagi |
-|---------|------|-------|-------|
-| 🕐 **Normal/Harmonogram** | `0x44` | `0x03` | bit 2 (`0x04`) w f[5] = harmonogram aktywny |
-| 🏠🚶 **Poza domem** | `0x44` | `0x03` | **IDENTYCZNE** jak Normal — brak zmiany w protokole |
-| 🧳 **Urlop** | `0x40` | `0x02` | bit 2 w f[5] WYŁĄCZONY + specjalny kod biegu 0x02 |
+| Program | f[5] | f[28] | Interpretacja |
+|---------|------|-------|---------------|
+| 🕐 Normal/Harmonogram | `0x44` | `0x03` | bit 2 (`0x04`) w f[5] = harmonogram aktywny |
+| 🏠🚶 Poza Domem | `0x44` | `0x03` | **identyczne jak Normal** — tylko lokalny override Nano |
+| 🧳 Urlop | `0x40` | `0x02` | bit 2 w f[5] WYŁĄCZONY + specjalny kod biegu `0x02` |
 
-**Kluczowe wnioski:**
+**POZA DOMEM nie jest widoczny w protokole** — Nano aplikuje setpoint "Poza Domem" lokalnie w ramach harmonogramu, ramki C14 wyglądają identycznie jak w Normal.
 
-1. **POZA DOMEM to tylko lokalny override na Nano** — nie wysyła przez C14 żadnej dedykowanej flagi. Nano aplikuje inną temperaturę (z setpointu "Poza domem") w ramach normalnego harmonogramu, ale protokół wygląda identycznie jak Normal.
+**URLOP to właściwa zmiana protokołu:**
+- `f[5]` bit 2 wyłączony (`0x40`) — slave'om przekazane "harmonogram nieaktywny"
+- `f[28] = 0x02` — wartość poza tabelą biegów (bit 0 "validity" = 0) — kod "zatrzymaj komendę biegu"
+- AERO ignoruje harmonogram i utrzymuje setpoint z E5(29) f[16-17]
 
-2. **URLOP to prawdziwa zmiana protokołu:**
-   - `f[5]` bit 2 wyłączony → "harmonogram nieaktywny"
-   - `f[28] = 0x02` → wartość poza tabelą biegów (naruszona "validity flag") — sygnalizuje urlop jako zatrzymanie bieżącej komendy biegu
-   - AERO w URLOP otrzymuje stały setpoint (ten sam co Poza Domem) i ignoruje harmonogram
-
-3. **POZA DOMEM i URLOP współdzielą setpoint** w menu serwisowym Nano (jedna wartość dla obu trybów: "Poza Domem" 20.0°C). Różnica jest w BEHAWIORZE: POZA DOMEM respektuje harmonogram, URLOP nie.
+**Setpoint współdzielony:** Menu serwisowe Nano ma jedną nastawę "Poza Domem" (np. 20°C) używaną dla OBU programów. Różnica jest w zachowaniu: Poza Domem respektuje harmonogram, Urlop go wyłącza.
 
 ---
 
@@ -383,22 +410,24 @@ Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 
 ---
 
-## Master Full vs Mini — wake-up dla Nano slave (2026-04-22)
+## Zachowanie urządzeń slave
 
-**Odkrycie:** ESP Master **Mini** (10 ramek) → Nano slave id=2 **całkowicie cichy**, nie nadaje niczego na magistrali. ESP Master **Full** (27 ramek) → **Nano slave zaczyna nadawać** E4(2A) i inne ramki.
+### Nano jako slave (id ≠ 1)
 
-Wniosek: jakaś z 17 dodatkowych ramek Full działa jak "wake-up" / enumeration dla Nano slave. Analogia do E3(29)_44 która triggeruje AERO E4(63) response.
+Gdy Nano jest w trybie slave (`f[3] = 0x28 + id`, id 2-20), obserwowane zachowania:
 
-**Kandydaci do triggera Nano slave** (jeszcze nie rozstrzygnięte):
-- D3/D4/D5 src=0x44 — slave config rozszerzony (Mini ma tylko D0-D2)
-- 8B/9F/82/8C/8D/8E/95 src=0x44 — puste heartbeaty per slave ID
-- AA/AB/AC src=0x44 + src=0x56 — dublowane broadcasty (dual-address)
+- **Master Mini master obecny na busie** → Nano slave **cichy** (zero TX).
+- **Master Full master obecny** → Nano slave aktywuje się i nadaje E4(2A) oraz inne ramki.
+  Triggerem jest któraś z 17 ramek dodanych w Full (D3-D5 / 8x / AA-AC) — konkretna jeszcze nierozstrzygnięta.
+- **Brak mastera** → Nano slave cichy.
 
-**Hipoteza:** Nano slave czeka na swój dedykowany slave ID broadcast zanim zacznie się komunikować. Ponieważ ID 0x8B/0x8E/0x95 itp. mogą odpowiadać konkretnym typom urządzeń w systemie COMPIT.
+### Nano slave — czas i RTC
 
-**Nano slave czas:** niezależny RTC, NIE synchronizuje z master. Mimo że ESP wysyła poprawny czas w E4(29) f[4-9], Nano slave wysyła własne wartości startowe (f[4]=0x0A, f[7]=0x02, f[8]=0x0F) — ignoruje master time broadcast. To cecha firmware, nie bug protokołu.
+Nano slave **NIE synchronizuje zegara z magistrali**. Mimo że master wysyła poprawny czas w E4(29) f[4-9], Nano slave używa własnego RTC (widoczny drift między sesjami power-cycle). W menu Nano slave komunikat "godzinę ustawia Nano 1" — Nano id=1 ma autorytet czasu, ale mechanizm sync przez C14 nie jest aktywny w obserwowanym firmware.
 
-**Nano slave f[28] w E4(2A):** 0x43 (B1 stare encoding) — Nano pamięta ostatni bieg sprzed zmiany na slave, nie oznacza że slave komenderuje (f[3]=0x2A wskazuje slave mimo komendy w f[28]).
+### Nano slave — kod biegu w E4(2A)
+
+Nano slave wysyła w E4(2A) `f[28] = 0x43` (stare encoding B1) niezależnie od aktualnego biegu masters. To jest wartość zapamiętana z sesji gdy Nano był masterem — slave nie komenderuje biegami, nawet jeśli `f[28]` zawiera "komendę". AERO interpretuje komendy **tylko z ramki E4(29) src=0x21 z `f[3] = 0x29`** (master id=1).
 
 ---
 
