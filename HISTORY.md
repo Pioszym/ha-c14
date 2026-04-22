@@ -135,6 +135,46 @@ Po dodaniu trybu Master Full do ESP (27 ramek zamiast 10) zauważyliśmy że Nan
 
 **Lekcja:** jeśli odkryjesz jedną ramkę-trigger (typu AA/44, E3/44), sprawdź czy dalsze ramki w cyklu są w ogóle potrzebne. Protokoły enumeracji często mają wiele "pytań o typy" które odpadają jeśli masz znane wąskie grono urządzeń.
 
+## Slave boot announcement — 80(2A) (2026-04-22 wieczór)
+
+Podczas testu z Nano slave id=2 + power cycle zaobserwowaliśmy nową ramkę której wcześniej nie widzieliśmy w żadnym cyklu master:
+
+```
+80,44,5F,2A,7E×26,23
+```
+
+Kluczowe cechy:
+- **Jednorazowa** (przez całą sesję testową 4+ minut tylko 1 wystąpienie)
+- Pojawiła się ~3s po power-on Nano
+- Struktura identyczna z `81(29)` (Nano master heartbeat) ale z `f[0]-1` i `f[3]+1` — sugeruje rodzinę frame ID: 0x80=slave_hb, 0x81=master_hb
+- f[2]=0x5F identyczna jak 81(29) heartbeat — to te same bajty po prostu z innym `f[3]`
+
+**Po 80(2A) Nano slave zmienił encoding E4(2A):**
+- f[28] z `0x43` (stare B1 manual) → `0x03` (nowe B1 — jak nasz ESP master)
+- Rotator zresetowany
+
+Interpretacja: 80(2A) to pewnie "slave ready / boot complete" announcement. Tłumaczy komunikat UI "DATĘ USTAWIA NANO NR 1" — slave po tym oczekuje synchronizacji daty od mastera. Nasz ESP-master takiej synchronizacji nie wysyła (nie znamy formatu odpowiedzi), więc Nano slave zachowuje własny RTC.
+
+**TODO:** zarejestrować co master (Nano nr 1) wysyła ~400ms po otrzymaniu 80(2A) — prawdopodobnie jest jakaś odpowiedź z datą. To wymagałoby testu z Nano master + Nano slave + ESP tylko jako sniffer.
+
+## Data nie jest transmitowana przez C14 (2026-04-22)
+
+Test zmiany daty/godziny na Nano master w trakcie logu bridge:
+
+| Zmiana | Skutek w E4(29) Nano |
+|--------|----------------------|
+| Dzień 22→24 | Brak zmian |
+| Miesiąc 04→02 | f[7] z `0x01/02` → `0x05` (może przeliczony day_of_week) |
+| Rok 2026→2024 | Brak zmian |
+| Godzina 17→19 | f[8] z `0x11` → `0x13` ✓ |
+| Minuta 14→10 | f[9] z `0x0E` → `0x0A` ✓ |
+
+**Wniosek:** tylko godzina i minuta transmitowane na C14. Dzień/miesiąc/rok Nano trzyma lokalnie (dla wyświetlacza i harmonogramu). AERO nie dostaje daty — wystarcza mu czas dnia.
+
+Sprawdzone wszystkie 27 ramek Master Full — pozostałe 25 (oprócz E4(29) i E5(29)) **stałe bajt-w-bajt** przez cały test (tylko cksum się zmienia). Brak ukrytego pola z datą.
+
+---
+
 ## Co zostało otwarte (do przyszłych sesji)
 
 - **E5(29) f[18-19]** (`00,30` stałe) — nie reaguje na lato/zima/chłodzenie ani bypass. Może parametr konfiguracyjny (histereza, korekta temperatury)?

@@ -412,6 +412,28 @@ Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 
 ## Zachowanie urządzeń slave
 
+### Ramka 80(29) src=0x44 — slave boot announcement
+
+Gdy Nano w trybie slave (id ≠ 1) startuje (power-on), nadaje **jeden raz** ramkę typu 0x80:
+
+```
+80,44,[cks],2A,7E×26,23
+```
+
+- f[0] = 0x80 (nowy typ, para do 0x81 = master heartbeat)
+- f[3] = 0x2A (slave id=2)
+- f[2] = 0x5F (taka sama cksum jak 81(29) — sugeruje wspólną rodzinę heartbeat)
+- payload = 0x7E fill (puste, tylko sygnalizacja)
+
+**Obserwacja 2026-04-22:** po power-cycle Nano slave wysłał 80(2A) **jednorazowo** ~3-5s po starcie (timing zgodny z pierwszym E5(29) od ESP master). Po tej ramce Nano zmienił encoding E4(2A):
+- f[28] z `0x43` (stare B1) → `0x03` (nowe B1, zgodnie z naszym ESP master)
+- f[23-24] z `14,64` → `14,32` (coś typu limit % fan)
+- Rotator f[25-26] zresetowany do `00,00`
+
+**Hipoteza:** 80(2A) to "slave ready announcement" — Nano informuje że jest po boot i gotowy do synchronizacji. Komunikat Nano slave UI "DATĘ I CZAS USTAWIA NANO NR 1" sugeruje że po tym może być oczekiwana odpowiedź od mastera z sync (którą my nie wysyłamy — być może dedykowana ramka typu `81(2A)` czy inna).
+
+---
+
 ### Nano jako slave (id ≠ 1)
 
 Gdy Nano jest w trybie slave (`f[3] = 0x28 + id`, id 2-20), obserwowane zachowania:
