@@ -29,6 +29,43 @@ Reverse engineering magistrali RS-485 między rekuperatorem **COMPIT AERO 3B** a
 | 0x56 | Slot iNext/EX4 |
 | 0x63 | Tylko E4 od AERO (odpowiedź) |
 
+## Master ID — pole f[3] (subtyp ramki)
+
+**Wzór:** `f[3] = 0x28 + id` — gdzie `id` to numer sterownika (Nano Color) w menu serwisowym.
+
+| ID | f[3] | Rola |
+|----|------|------|
+| 1 | 0x29 | **Master główny** — jedyny z pełną kontrolą biegów/bypass |
+| 2 | 0x2A | Slave/pasywny (UI biegów ukryte na Nano) |
+| 3 | 0x2B | Slave/pasywny |
+| 5 | 0x2D | Slave/pasywny |
+| 10 | 0x32 | Slave/pasywny |
+| 20 | 0x3C | Slave/pasywny |
+| ... | 0x28+id | (do max ~20) |
+
+Potwierdzone empirycznie testami 2026-04-22:
+- Zmiana ID w menu Nano → zmienia `f[3]` we wszystkich ramkach wysyłanych przez ten sterownik
+- Power cycle nie zmienia ID (zapamiętane w EEPROM Nano)
+
+### Różnice w zachowaniu master vs slave w ramce E4(29)
+
+Tylko master **id=1** może sterować biegami — pozostałe ID nadają ramki, ale bez komendy biegu:
+
+| ID | E4(29) f[28] | Znaczenie |
+|----|--------------|-----------|
+| 1 (master) | `0x41/0x43/0x45/0x47` | Stop / B1 / B2 / B3 |
+| 1 (master, overlay) | `+0x08` na f[28] | Wietrzenie ON (0x49/4B/4D/4F) |
+| 2+ (slave) | `0x03` stale | Brak komendy — "follow master" |
+
+Konsekwencja: jeśli na magistrali **nie ma żadnego urządzenia z id=1**, AERO nie dostaje komendy biegu → wentylatory nie startują (test 2026-04-22: id=20 + power cycle = brak kontroli).
+
+### Dual master (ESP + Nano)
+
+- ESP jako master id=1 (`f[3]=0x29`) → pełna kontrola komendami
+- Nano jako slave id=2 (`f[3]=0x2A`) → wyświetlacz pasywny, czyta E4(63) od AERO
+
+Ta konfiguracja jest zgodna z dokumentacją COMPIT: "jeden master, unikalne ID dla każdego urządzenia".
+
 ## Checksum (f[2])
 
 Formuła: `(f[0] + f[1] + sum(f[3]..f[28]) + K) & 0xFF`
