@@ -106,6 +106,10 @@ globals:
     type: bool
     restore_value: true
     initial_value: "false"
+  - id: g_master_full
+    type: bool
+    restore_value: true
+    initial_value: "false"   # false=Mini (10 ramek), true=Full (27 ramek)
   # Setpointy temperatur (5 trybow, wartosci w stopniach C)
   - id: g_sp_comfort
     type: float
@@ -421,6 +425,265 @@ script:
                      0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
       - delay: 800ms
 
+      # ========== MASTER FULL EXTENSION (27 ramek total, ~22s cykl) ==========
+      # Ramki 11-27 wysylane tylko gdy g_master_full=true.
+      # Zawartosc statyczna (0x7E/0x00 fill) — enumeration/keepalive dla slaves.
+      # Hipoteza: Nano slave moze potrzebowac tych ramek do time sync / enumeration.
+
+      # 11. D3(29) — slave config rozszerzony
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "11"
+                bytes: !lambda |-
+                  return { 0xD3,0x44,0x68,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                           0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 12. D4(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "12"
+                bytes: !lambda |-
+                  return { 0xD4,0x44,0x69,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                           0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 13. D5(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "13"
+                bytes: !lambda |-
+                  return { 0xD5,0x44,0x6A,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                           0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 14. E3(29) src=44 — DRUGI QUERY (identyczny jak #2, AERO odpowie ponownie)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "14"
+                bytes: !lambda |-
+                  std::vector<uint8_t> f = {
+                    0xE3,0x44,0x00,0x29,0x32,0x00,0x05,0x0A,0x28,0x1C,0x2A,0x1E,
+                    0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
+                    0x2D,0x4B,0x20,0x01,0x13,0x23 };
+                  f[14] = id(g_wyw_wiet);
+                  f[15] = id(g_naw_wiet);
+                  f[20] = id(g_wyw_b1);
+                  f[21] = id(g_wyw_b2);
+                  f[22] = id(g_wyw_b3);
+                  f[23] = id(g_naw_b1);
+                  f[24] = id(g_naw_b2);
+                  f[25] = id(g_naw_b3);
+                  uint8_t v28 = id(g_gear_cmd);
+                  if (id(g_season) == 2) v28 |= 0x08;
+                  f[28] = v28 + 0x10;
+                  uint16_t s = f[0] + f[1];
+                  for (int i = 3; i <= 28; i++) s += f[i];
+                  f[2] = (s + 0xA3) & 0xFF;
+                  return f;
+            - delay: 800ms
+
+      # 15. 8B(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "15"
+                bytes: !lambda |-
+                  return { 0x8B,0x44,0x69,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 16. 9F(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "16"
+                bytes: !lambda |-
+                  return { 0x9F,0x44,0x7D,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 17. 82(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "17"
+                bytes: !lambda |-
+                  return { 0x82,0x44,0x60,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 18. 8C(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "18"
+                bytes: !lambda |-
+                  return { 0x8C,0x44,0x6A,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 19. 8D(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "19"
+                bytes: !lambda |-
+                  return { 0x8D,0x44,0x6B,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 20. 8E(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "20"
+                bytes: !lambda |-
+                  return { 0x8E,0x44,0x6C,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 21. 95(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "21"
+                bytes: !lambda |-
+                  return { 0x95,0x44,0x73,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 22. AA(29) src=44
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "22"
+                bytes: !lambda |-
+                  return { 0xAA,0x44,0x08,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 23. AA(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "23"
+                bytes: !lambda |-
+                  return { 0xAA,0x56,0x4C,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
+      # 24. AB(29) src=44
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "24"
+                bytes: !lambda |-
+                  return { 0xAB,0x44,0x09,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 25. AB(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "25"
+                bytes: !lambda |-
+                  return { 0xAB,0x56,0x4D,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
+      # 26. AC(29) src=44
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "26"
+                bytes: !lambda |-
+                  return { 0xAC,0x44,0x0A,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 27. AC(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "27"
+                bytes: !lambda |-
+                  return { 0xAC,0x56,0x4E,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
 
 interval:
   # RX parser dla uart_aero — loguje AERO E4(63) + cache temperatur
@@ -623,6 +886,21 @@ switch:
       - lambda: |-
           id(g_master_on) = false;
           ESP_LOGW("c14m","=== MASTER MODE OFF ===");
+
+  - platform: template
+    name: "C14 Master Full"
+    id: sw_master_full
+    icon: mdi:format-list-numbered
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_master_full) = true;
+          ESP_LOGW("c14m","=== MASTER FULL ON (27 ramek, ~22s cykl) ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_master_full) = false;
+          ESP_LOGW("c14m","=== MASTER FULL OFF (10 ramek Mini, ~8s cykl) ===");
 
   - platform: template
     name: "Wietrzenie"
