@@ -165,7 +165,7 @@ E4,21,[cks],29,[DOM],40,00,[DOW],[HH],[MM],7E,00,[TRM_H],[TRM_L],[SP_H],[SP_L],7
 | Bajty | Znaczenie | Status |
 |-------|-----------|--------|
 | f[4] | **Dzień miesiąca** (1-31) | KNOWN |
-| f[5] | 0x40 stałe | UNKNOWN |
+| f[5] | **Flaga trybu:** `0x44`=harmonogram aktywny (Normal/Poza domem), `0x40`=harmonogram WYŁĄCZONY (URLOP) | KNOWN |
 | f[7] | **Dzień tygodnia** (1=Mon..7=Sun) | PARTIAL |
 | f[8] | **Godzina** 0-23 | KNOWN |
 | f[9] | **Minuta** 0-59 | KNOWN |
@@ -219,6 +219,27 @@ Bit 0 = validity flag (zawsze set), bity 1-2 = value biegu (0-3):
 - `+0x08` (bit 3) = chłodzenie aktywne (dodawane do biegu: manual B1+cool = `0x0B`)
 
 **Uwaga:** AERO reaguje mechanicznie **tylko na bity 1-2** (value biegu). Bit `0x40` (harmonogram) i `0x08` (chłodzenie) ignoruje przy decyzji o prędkości wentylatora — ale może mieć znaczenie dla innych slaves (iNext).
+
+### Programy — Normal / Poza domem / Urlop (test 2026-04-22)
+
+Nano ma 3 programy dostępne z TRYB PRACY (ikony: 🕐 harmonogram, 🏠🚶 poza domem, 🧳 urlop). Test przełączania tych programów pokazuje:
+
+| Program | f[5] | f[28] | Uwagi |
+|---------|------|-------|-------|
+| 🕐 **Normal/Harmonogram** | `0x44` | `0x03` | bit 2 (`0x04`) w f[5] = harmonogram aktywny |
+| 🏠🚶 **Poza domem** | `0x44` | `0x03` | **IDENTYCZNE** jak Normal — brak zmiany w protokole |
+| 🧳 **Urlop** | `0x40` | `0x02` | bit 2 w f[5] WYŁĄCZONY + specjalny kod biegu 0x02 |
+
+**Kluczowe wnioski:**
+
+1. **POZA DOMEM to tylko lokalny override na Nano** — nie wysyła przez C14 żadnej dedykowanej flagi. Nano aplikuje inną temperaturę (z setpointu "Poza domem") w ramach normalnego harmonogramu, ale protokół wygląda identycznie jak Normal.
+
+2. **URLOP to prawdziwa zmiana protokołu:**
+   - `f[5]` bit 2 wyłączony → "harmonogram nieaktywny"
+   - `f[28] = 0x02` → wartość poza tabelą biegów (naruszona "validity flag") — sygnalizuje urlop jako zatrzymanie bieżącej komendy biegu
+   - AERO w URLOP otrzymuje stały setpoint (ten sam co Poza Domem) i ignoruje harmonogram
+
+3. **POZA DOMEM i URLOP współdzielą setpoint** w menu serwisowym Nano (jedna wartość dla obu trybów: "Poza Domem" 20.0°C). Różnica jest w BEHAWIORZE: POZA DOMEM respektuje harmonogram, URLOP nie.
 
 ---
 
