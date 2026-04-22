@@ -383,15 +383,35 @@ Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 
 ---
 
+## Master Full vs Mini — wake-up dla Nano slave (2026-04-22)
+
+**Odkrycie:** ESP Master **Mini** (10 ramek) → Nano slave id=2 **całkowicie cichy**, nie nadaje niczego na magistrali. ESP Master **Full** (27 ramek) → **Nano slave zaczyna nadawać** E4(2A) i inne ramki.
+
+Wniosek: jakaś z 17 dodatkowych ramek Full działa jak "wake-up" / enumeration dla Nano slave. Analogia do E3(29)_44 która triggeruje AERO E4(63) response.
+
+**Kandydaci do triggera Nano slave** (jeszcze nie rozstrzygnięte):
+- D3/D4/D5 src=0x44 — slave config rozszerzony (Mini ma tylko D0-D2)
+- 8B/9F/82/8C/8D/8E/95 src=0x44 — puste heartbeaty per slave ID
+- AA/AB/AC src=0x44 + src=0x56 — dublowane broadcasty (dual-address)
+
+**Hipoteza:** Nano slave czeka na swój dedykowany slave ID broadcast zanim zacznie się komunikować. Ponieważ ID 0x8B/0x8E/0x95 itp. mogą odpowiadać konkretnym typom urządzeń w systemie COMPIT.
+
+**Nano slave czas:** niezależny RTC, NIE synchronizuje z master. Mimo że ESP wysyła poprawny czas w E4(29) f[4-9], Nano slave wysyła własne wartości startowe (f[4]=0x0A, f[7]=0x02, f[8]=0x0F) — ignoruje master time broadcast. To cecha firmware, nie bug protokołu.
+
+**Nano slave f[28] w E4(2A):** 0x43 (B1 stare encoding) — Nano pamięta ostatni bieg sprzed zmiany na slave, nie oznacza że slave komenderuje (f[3]=0x2A wskazuje slave mimo komendy w f[28]).
+
+---
+
 ## Otwarte pytania (do zbadania)
 
 1. **E5(29) f[18-19]** (`00,30` stałe) — przełączanie lato/zima/chłodzenie **nie** zmienia tego pola. Może maska konfiguracji lub parametr którego nie testowaliśmy.
-2. **E4(29) f[5]** (`0x40` stałe) — rola nieznana.
+2. **E4(29) f[5]** — nie stałe! `0x44` w Normal/Harmonogram/Poza Domem, `0x40` w URLOP. Bit 2 = "harmonogram aktywny" flag.
 3. **E4(29) f[24]** (wariabilne `0x32`/`0x64`/`0x00`) — nie widać prostego wzoru. Może związane z setpoint delta lub PID.
 4. **E4(29) f[25-26] rotator** — c=3 wariacje (`0x0E`/`0x0F`/`0x13`) zależnie od trybu.
 5. **E5(29) f[28]** — pełny enum kodów UI (obserwowane niejednolite wartości).
 6. **Format E2, D0-D2** — wartości w polach "stałych" mogą się zmieniać przy edge case'ach.
 7. **Cold-start Nano** — czy istnieje sekwencja handshake? ESP-master jej nie robi i działa, ale być może AERO startuje w trybie "trusted".
+8. **Która konkretna ramka w Master Full triggeruje Nano slave?** Test połówkowy (wyłącz grupę A/D/8x i obserwuj) rozstrzygnie.
 
 ---
 
