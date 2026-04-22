@@ -36,19 +36,19 @@ time:
 #   - E4(29) src=0x21 jest KOMENDA biegu (AERO reaguje mechanicznie)
 #   - Reszta 8 ramek = broadcasts dla Nano/iNext, AERO ignoruje
 #
-# Cykl mastera (kolejnosc: iNEXT pierwsze, QUERY ostatnia):
-#   1. E3(29) src56 iNEXT    + 800ms slot -> rezerwacja miejsca dla iNext
-#   2. E2(29) status         + 800ms slot
-#   3. E5(29) setpointy      + 800ms slot
-#   4. F0(29) heartbeat      + 800ms slot
-#   5. 81(29) Nano hb        + 800ms slot
-#   6. D0(29) slave cfg      + 800ms slot
-#   7. D1(29) slave cfg      + 800ms slot
-#   8. D2(29) slave cfg      + 800ms slot
-#   9. E4(29) bieg           + 800ms slot (komenda biegu)
-#   10. E3(29) src44 QUERY   + 800ms slot -> AERO odpowie E4(63)
-# Total: 10 * 800ms = 7.5s, interval 8500ms = jak Nano.
-# AERO odpowiada bliskawicznie (~400ms), wiec 800ms slot wystarcza.
+# Cykl mastera (kolejnosc zgodna z Nano Master Mini):
+#   1. E4(29) bieg + zegar   + 800ms slot (komenda PIERWSZA jak u Nano)
+#   2. E3(29) src44 QUERY    + 800ms slot -> AERO odpowie E4(63) tutaj
+#   3. E3(29) src56 iNEXT    + 800ms slot (rezerwacja miejsca dla iNext)
+#   4. E2(29) status         + 800ms slot
+#   5. E5(29) setpointy      + 800ms slot
+#   6. F0(29) heartbeat      + 800ms slot
+#   7. 81(29) Nano hb        + 800ms slot
+#   8. D0(29) slave cfg      + 800ms slot
+#   9. D1(29) slave cfg      + 800ms slot
+#   10. D2(29) slave cfg     + 800ms slot
+# Total: 10 * 800ms = 8.0s, interval 8500ms = jak Nano Master Mini.
+# AERO odpowiada ~400ms po ramce #2 QUERY.
 #
 # Wymagania hardware:
 #   - Nano odlaczony od busa (A/B) albo zostawiony pasywnie (ESP master)
@@ -238,123 +238,13 @@ script:
           id(g_aero_resp_cycle) = 0;
           id(g_cycle_count)++;
 
-      # 1. E3(29) src=56 — iNEXT slot (pusty, rezerwacja miejsca)
-      - script.execute:
-          id: tx_frame
-          name: "1"
-          bytes: !lambda |-
-            return { 0xE3,0x56,0x05,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                     0x00,0x00,0x00,0x00,0x00,0x23 };
-      - delay: 800ms
-
-      # 2. E2(29) — status broadcast
-      - script.execute:
-          id: tx_frame
-          name: "2"
-          bytes: !lambda |-
-            return { 0xE2,0x44,0x1E,0x29,0x4D,0x00,0x00,0x00,0x03,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x00,0x00,0x7E,0x7E,0x23 };
-      - delay: 800ms
-
-      # 3. E5(29) — setpointy + bypass + sezon
-      # f[6-7]=T.Czerpnia (z cache AERO), f[8-9]=Comfort, f[10-11]=Eco, f[12-13]=Chlodzenie,
-      # f[14-15]=Zadana reczna, f[16-17]=Poza domem, f[25]=bypass, f[27]=sezon (0/0x0A/0x14),
-      # f[28]=kod biegu dla UI (0=Stop, 1=B1, 2=B2, 3=B3)
-      - script.execute:
-          id: tx_frame
-          name: "3"
-          bytes: !lambda |-
-            std::vector<uint8_t> f = {
-              0xE5,0x21,0x00,0x29,0x00,0x00,0x10,0x4D,0x11,0x36,0x11,0x22,
-              0x11,0x36,0x11,0x2C,0x11,0x18,0x00,0x30,0x7E,0x00,0x7E,0x00,
-              0x00,0x61,0x00,0x00,0x00,0x23 };
-            // Kodowanie temperatury: val = temp*10 + 2000 -> H=val/128, L=val%128
-            auto enc = [&f](int idx, float t) {
-              int16_t v = (int16_t)(t * 10.0f) + 2000;
-              if (v < 0) v = 0;
-              f[idx] = (v / 128) & 0xFF;
-              f[idx+1] = (v % 128) & 0xFF;
-            };
-            if (id(g_cache_valid)) enc(6, id(g_cache_czerp));
-            enc(8, id(g_sp_comfort));
-            enc(10, id(g_sp_eco));
-            enc(12, id(g_sp_chlodz));
-            enc(14, id(g_sp_reczna));
-            enc(16, id(g_sp_poza));
-            f[25] = id(g_bypass_cmd);
-            // f[27] sezon: 0=Zima -> 0x00, 1=Lato bez -> 0x0A, 2=Chlodzenie -> 0x14
-            uint8_t s27 = 0x00;
-            if (id(g_season) == 1) s27 = 0x0A;
-            else if (id(g_season) == 2) s27 = 0x14;
-            f[27] = s27;
-            // f[28] kod biegu w E5: 0/1/2/3 sekwencyjnie (bez bitu validity)
-            uint8_t g = id(g_gear_cmd) & 0x07;
-            f[28] = (g == 0x01) ? 0x00 : (g == 0x03) ? 0x01 : (g == 0x05) ? 0x02 : (g == 0x07) ? 0x03 : 0x00;
-            uint16_t s = f[0] + f[1];
-            for (int i = 3; i <= 28; i++) s += f[i];
-            f[2] = (s + 0xA3) & 0xFF;
-            return f;
-      - delay: 800ms
-
-      # 4. F0(29) — heartbeat broadcast
-      - script.execute:
-          id: tx_frame
-          name: "4"
-          bytes: !lambda |-
-            return { 0xF0,0x44,0x4E,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
-      - delay: 800ms
-
-      # 5. 81(29) — Nano heartbeat
-      - script.execute:
-          id: tx_frame
-          name: "5"
-          bytes: !lambda |-
-            return { 0x81,0x44,0x5F,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
-      - delay: 800ms
-
-      # 6. D0(29) — slave config
-      - script.execute:
-          id: tx_frame
-          name: "6"
-          bytes: !lambda |-
-            return { 0xD0,0x44,0x65,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
-                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
-      - delay: 800ms
-
-      # 7. D1(29)
-      - script.execute:
-          id: tx_frame
-          name: "7"
-          bytes: !lambda |-
-            return { 0xD1,0x44,0x66,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
-                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
-      - delay: 800ms
-
-      # 8. D2(29)
-      - script.execute:
-          id: tx_frame
-          name: "8"
-          bytes: !lambda |-
-            return { 0xD2,0x44,0x67,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
-                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
-      - delay: 800ms
-
-      # 9. E4(29) — komenda biegu + sezon + wietrzenie (przed query, zeby AERO zdazyla odpowiedziec)
+      # 1. E4(29) — komenda biegu + sezon + wietrzenie (PIERWSZA jak u Nano)
       # f[8-9]=zegar, f[12-13]=temp pokojowa (copy z cache), f[14-15]=aktywny setpoint Comfort,
       # f[27]=sezon (0x00/0x08/0x10) + bit 0x20 wietrzenie + bity 0-1 tryb temp manual (0x02),
       # f[28]=bieg manual (0x01/03/05/07) + overlay chlodz (0x08) gdy sezon=Chlodzenie
       - script.execute:
           id: tx_frame
-          name: "9"
+          name: "1"
           bytes: !lambda |-
             std::vector<uint8_t> f = {
               0xE4,0x21,0x00,0x29,0x0A,0x40,0x00,0x02,0x08,0x2E,0x7E,0x00,
@@ -393,13 +283,12 @@ script:
             return f;
       - delay: 800ms
 
-      # 10. E3(29) src=44 — QUERY + nastawy % per bieg + znacznik biegu f[28]
+      # 2. E3(29) src=44 — QUERY (trigger AERO) + nastawy % per bieg + znacznik biegu f[28]
       # f[14-15]=Wiet wyw/naw, f[20-22]=B1/B2/B3 wyw, f[23-25]=B1/B2/B3 naw
-      # f[28] znacznik biegu dla iNext/slaves. Obserwowano pattern z Nano: f[28] = E4_f[28] + 0x50 w harm,
-      # dla manual uzywamy g_gear_cmd z overlay chlodz (spojnie z E4 f[28]).
+      # f[28] znacznik biegu: wzor f[28] = bieg + 0x10
       - script.execute:
           id: tx_frame
-          name: "10"
+          name: "2"
           bytes: !lambda |-
             std::vector<uint8_t> f = {
               0xE3,0x44,0x00,0x29,0x32,0x00,0x05,0x0A,0x28,0x1C,0x2A,0x1E,
@@ -413,7 +302,6 @@ script:
             f[23] = id(g_naw_b1);
             f[24] = id(g_naw_b2);
             f[25] = id(g_naw_b3);
-            // f[28] znacznik biegu (obserwacja Nano: manual daje np. 0x13 dla B1, trzyma sie wzoru f[28] = bieg + 0x10)
             uint8_t v28 = id(g_gear_cmd);
             if (id(g_season) == 2) v28 |= 0x08;
             f[28] = v28 + 0x10;
@@ -421,6 +309,116 @@ script:
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + 0xA3) & 0xFF;
             return f;
+      - delay: 800ms
+
+      # 3. E3(29) src=56 — iNEXT slot (pusty, rezerwacja miejsca)
+      - script.execute:
+          id: tx_frame
+          name: "3"
+          bytes: !lambda |-
+            return { 0xE3,0x56,0x05,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                     0x00,0x00,0x00,0x00,0x00,0x23 };
+      - delay: 800ms
+
+      # 4. E2(29) — status broadcast
+      - script.execute:
+          id: tx_frame
+          name: "4"
+          bytes: !lambda |-
+            return { 0xE2,0x44,0x1E,0x29,0x4D,0x00,0x00,0x00,0x03,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x00,0x00,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 5. E5(29) — setpointy + bypass + sezon
+      # f[6-7]=T.Czerpnia (z cache AERO), f[8-9]=Comfort, f[10-11]=Eco, f[12-13]=Chlodzenie,
+      # f[14-15]=Zadana reczna, f[16-17]=Poza domem, f[25]=bypass, f[27]=sezon (0/0x0A/0x14),
+      # f[28]=kod biegu dla UI (0=Stop, 1=B1, 2=B2, 3=B3)
+      - script.execute:
+          id: tx_frame
+          name: "5"
+          bytes: !lambda |-
+            std::vector<uint8_t> f = {
+              0xE5,0x21,0x00,0x29,0x00,0x00,0x10,0x4D,0x11,0x36,0x11,0x22,
+              0x11,0x36,0x11,0x2C,0x11,0x18,0x00,0x30,0x7E,0x00,0x7E,0x00,
+              0x00,0x61,0x00,0x00,0x00,0x23 };
+            // Kodowanie temperatury: val = temp*10 + 2000 -> H=val/128, L=val%128
+            auto enc = [&f](int idx, float t) {
+              int16_t v = (int16_t)(t * 10.0f) + 2000;
+              if (v < 0) v = 0;
+              f[idx] = (v / 128) & 0xFF;
+              f[idx+1] = (v % 128) & 0xFF;
+            };
+            if (id(g_cache_valid)) enc(6, id(g_cache_czerp));
+            enc(8, id(g_sp_comfort));
+            enc(10, id(g_sp_eco));
+            enc(12, id(g_sp_chlodz));
+            enc(14, id(g_sp_reczna));
+            enc(16, id(g_sp_poza));
+            f[25] = id(g_bypass_cmd);
+            // f[27] sezon: 0=Zima -> 0x00, 1=Lato bez -> 0x0A, 2=Chlodzenie -> 0x14
+            uint8_t s27 = 0x00;
+            if (id(g_season) == 1) s27 = 0x0A;
+            else if (id(g_season) == 2) s27 = 0x14;
+            f[27] = s27;
+            // f[28] kod biegu w E5: 0/1/2/3 sekwencyjnie (bez bitu validity)
+            uint8_t g = id(g_gear_cmd) & 0x07;
+            f[28] = (g == 0x01) ? 0x00 : (g == 0x03) ? 0x01 : (g == 0x05) ? 0x02 : (g == 0x07) ? 0x03 : 0x00;
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + 0xA3) & 0xFF;
+            return f;
+      - delay: 800ms
+
+      # 6. F0(29) — heartbeat broadcast
+      - script.execute:
+          id: tx_frame
+          name: "6"
+          bytes: !lambda |-
+            return { 0xF0,0x44,0x4E,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 7. 81(29) — Nano heartbeat
+      - script.execute:
+          id: tx_frame
+          name: "7"
+          bytes: !lambda |-
+            return { 0x81,0x44,0x5F,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 8. D0(29) — slave config
+      - script.execute:
+          id: tx_frame
+          name: "8"
+          bytes: !lambda |-
+            return { 0xD0,0x44,0x65,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 9. D1(29)
+      - script.execute:
+          id: tx_frame
+          name: "9"
+          bytes: !lambda |-
+            return { 0xD1,0x44,0x66,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 10. D2(29)
+      - script.execute:
+          id: tx_frame
+          name: "10"
+          bytes: !lambda |-
+            return { 0xD2,0x44,0x67,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
       - delay: 800ms
 
 
