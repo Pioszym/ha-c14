@@ -417,9 +417,17 @@ Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 Gdy Nano jest w trybie slave (`f[3] = 0x28 + id`, id 2-20), obserwowane zachowania:
 
 - **Master Mini master obecny na busie** → Nano slave **cichy** (zero TX).
-- **Master Full master obecny** → Nano slave aktywuje się i nadaje E4(2A) oraz inne ramki.
-  Triggerem jest któraś z 17 ramek dodanych w Full (D3-D5 / 8x / AA-AC) — konkretna jeszcze nierozstrzygnięta.
+- **Master Mini + AA(29) src=0x44** → Nano slave aktywuje się i nadaje E4(2A).
+- **Master Full master obecny** → Nano slave aktywny (zawiera AA).
 - **Brak mastera** → Nano slave cichy.
+
+**Trigger Nano slave = ramka AA(29) src=0x44:**
+```
+AA,44,08,29,7E×26,23
+```
+(pusta zawartość, sama obecność na magistrali działa jak wake-up — analogicznie do E3(29)_44 dla AERO).
+
+Pozostałe 16 ramek Master Full (D3-D5, 8B-9F, AB, AC) **nie są wymagane** do aktywacji Nano slave — to prawdopodobnie enumeration dla innych typów urządzeń (EX4, iNEXT expansion, dodatkowe Nano) niewystępujących w tym setupie.
 
 ### Nano slave — czas i RTC
 

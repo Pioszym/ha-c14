@@ -129,7 +129,11 @@ Po dodaniu trybu Master Full do ESP (27 ramek zamiast 10) zauważyliśmy że Nan
 
 **Analogia do odkrycia triggera AERO:** Nano slave też czeka na konkretną ramkę zanim się aktywuje, podobnie jak AERO czeka na E3(29)_44.
 
-**TODO test połówkowy:** dodać switche grupowe (`full_grp_d`, `full_grp_8x`, `full_grp_a`), wyłączać grupy po kolei i obserwować kiedy Nano slave zamilknie. To wskaże konkretny trigger.
+**Rozstrzygnięcie (2026-04-22 wieczór):** zamiast testu połówkowego z grupami, bezpośrednio zredukowaliśmy Full do Mini + jednej konkretnej ramki. Test z **tylko AA(29) src=0x44** (ramka #22 z Full) + Mini 10 ramek → **Nano slave aktywuje się**. Potwierdzone: to ta jedna ramka jest wake-upem, pozostałe 16 ramek Full to enumeration dla innych typów urządzeń (EX4, dodatkowe Nano, iNEXT expansion) — w naszym setupie niepotrzebne.
+
+**Praktyczna implikacja:** "Lean Master" (11 ramek: Mini + AA(29)_44) daje te same wyniki co Full (27 ramek) — Nano slave aktywny, AERO odpowiada — przy 2-3× krótszym cyklu (~9s zamiast ~22s).
+
+**Lekcja:** jeśli odkryjesz jedną ramkę-trigger (typu AA/44, E3/44), sprawdź czy dalsze ramki w cyklu są w ogóle potrzebne. Protokoły enumeracji często mają wiele "pytań o typy" które odpadają jeśli masz znane wąskie grono urządzeń.
 
 ## Co zostało otwarte (do przyszłych sesji)
 
