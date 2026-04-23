@@ -29,6 +29,16 @@ Reverse engineering magistrali RS-485 między rekuperatorem **COMPIT AERO 3B** a
 | 0x56 | Slot iNext/EX4 |
 | 0x63 | Tylko E4 od AERO (odpowiedź) |
 
+## Checksum (f[2])
+
+Formuła: `(f[0] + f[1] + sum(f[3]..f[28]) + K) & 0xFF`
+
+| K | Dotyczy ramek |
+|---|---------------|
+| **0xA3** | E4(29), E4(63), E5(29), E3(29)_44, E3(29)_56, E2(29), F0(29), D0-D2(29), 81(29) — **prawdopodobnie wszystkie** |
+
+> **Historia:** wcześniej (memory) zakładano różne K dla różnych ramek. Empirycznie zweryfikowane 2026-04-19 — wszystkie obserwowane ramki C14 w tym setupie używają **K=0xA3**. Jeśli pojawią się ramki z innym K, uzupełnić tabelę.
+
 ## Master ID — pole f[3] (subtyp ramki)
 
 **Wzór:** `f[3] = 0x28 + id` — gdzie `id` to numer sterownika (Nano Color) w menu serwisowym.
@@ -65,16 +75,6 @@ Konsekwencja: jeśli na magistrali **nie ma żadnego urządzenia z id=1**, AERO 
 - Nano jako slave id=2 (`f[3]=0x2A`) → wyświetlacz pasywny, czyta E4(63) od AERO
 
 Ta konfiguracja jest zgodna z dokumentacją COMPIT: "jeden master, unikalne ID dla każdego urządzenia".
-
-## Checksum (f[2])
-
-Formuła: `(f[0] + f[1] + sum(f[3]..f[28]) + K) & 0xFF`
-
-| K | Dotyczy ramek |
-|---|---------------|
-| **0xA3** | E4(29), E4(63), E5(29), E3(29)_44, E3(29)_56, E2(29), F0(29), D0-D2(29), 81(29) — **prawdopodobnie wszystkie** |
-
-> **Historia:** wcześniej (memory) zakładano różne K dla różnych ramek. Empirycznie zweryfikowane 2026-04-19 — wszystkie obserwowane ramki C14 w tym setupie używają **K=0xA3**. Jeśli pojawią się ramki z innym K, uzupełnić tabelę.
 
 ## Enkoding temperatury
 
@@ -365,15 +365,6 @@ E4,21,[cks],63,09,74,00,3C,00,00,[CZ_H],[CZ_L],[CZ_H],[CZ_L],[NW_H],[NW_L],[WT_H
 | f[28] | `0x40/0x60` | **Bypass bit 5:** 0x40=zamknięty, 0x60=otwarty (maska `& 0x20`) | KNOWN |
 | f[29] | `0x23` | terminator | KNOWN |
 
-### % wentylatora per bieg (fabryczne)
-| Bieg | f[24] naw | f[25] wyw |
-|------|-----------|-----------|
-| Stop | `0x00` (0%) | `0x00` (0%) |
-| B1 | `0x25` (37%) | `0x20` (32%) |
-| B2 | `0x2D` (45%) | `0x28` (40%) |
-| B3 | `0x4B` (75%) | `0x46` (70%) |
-| Wietrz. | `0x64` (100%) | `0x5F` (95%) |
-
 ---
 
 
@@ -490,9 +481,9 @@ E4,2A,[cks],29,0D,01,05,28,1C,2A,00,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B
 Charakterystyczne:
 - **f[1] = 0x2A** — adresowanie do konkretnego slave id=2 (normalnie ramki mastera mają `f[1]=0x21`)
 - f[3] = 0x29 (master-side subtype)
+- f[4-13] = `0D,01,05,28,1C,2A,00,1E,01,17` — **stałe** między power cycles, NIE zawiera daty
 - Od f[14] do f[27] — identyczne jak w E3(29)_44 query (% per bieg, rotator)
 - f[28] — kod biegu slave (`0x53` gdy harmonogram B1, `0x13` gdy manual B1)
-- f[4-13] = `0D,01,05,28,1C,2A,00,1E,01,17` — **stałe** między power cycles, NIE zawiera daty
 
 **Rola:** master pushuje konfigurację do slave'a (ID-specific broadcast). Slave po tym wydarzeniu aktualizuje encoding w swoich E4(2A):
 - f[28] zmienia się z `0x43` (stare B1) na `0x03` (nowe B1, zgodne z trybem master)
@@ -513,14 +504,14 @@ Gdy Nano w trybie slave (id ≠ 1) startuje (power-on), nadaje **jeden raz** ram
 ```
 
 - f[0] = 0x80 (nowy typ, para do 0x81 = master heartbeat)
-- f[3] = 0x2A (slave id=2)
 - f[2] = 0x5F (taka sama cksum jak 81(29) — sugeruje wspólną rodzinę heartbeat)
+- f[3] = 0x2A (slave id=2)
 - payload = 0x7E fill (puste, tylko sygnalizacja)
 
 **Obserwacja 2026-04-22:** po power-cycle Nano slave wysłał 80(2A) **jednorazowo** ~3-5s po starcie. Po tej ramce Nano zmienił encoding E4(2A):
-- f[28] z `0x43` (stare B1) → `0x03` (nowe B1, zgodnie z naszym ESP master)
 - f[23-24] z `14,64` → `14,32` (coś typu limit % fan)
 - Rotator f[25-26] zresetowany do `00,00`
+- f[28] z `0x43` (stare B1) → `0x03` (nowe B1, zgodnie z naszym ESP master)
 
 **Timing w cyklu master (potwierdzone 3 obserwacjami — pozycja LOSOWA):**
 
@@ -556,6 +547,7 @@ Pozostałe 16 ramek Master Full (D3-D5, 8B-9F, AB, AC) **nie są wymagane** do a
 ### Nano slave — czas i RTC
 
 Nano slave **NIE synchronizuje zegara z magistrali**. Mimo że master wysyła poprawny czas w E4(29) f[4-9], Nano slave używa własnego RTC (widoczny drift między sesjami power-cycle). W menu Nano slave komunikat "godzinę ustawia Nano 1" — Nano id=1 ma autorytet czasu, ale mechanizm sync przez C14 nie jest aktywny w obserwowanym firmware.
+!! Synchronizuje, tylko jeszcze nie wiemy jak !!
 
 ### Nano slave — kod biegu w E4(2A)
 
@@ -578,7 +570,7 @@ Nano slave wysyła w E4(2A) `f[28] = 0x43` (stare encoding B1) niezależnie od a
 
 ## Źródła / wiarygodność
 
-- Wszystkie powyższe ustalenia pochodzą z sniffu rzeczywistej magistrali w setupie **Piotra** (prod 2021):
+- Wszystkie powyższe ustalenia pochodzą z sniffu rzeczywistej magistrali (prod 2021):
   - AERO 3B V2 .52 (NR M15-04-01792)
   - Nano Color CTP (NR L17-02-02717)
   - Centrala: Prodmax 300
