@@ -146,11 +146,13 @@ Pełna sekwencja w kolejności nadawania:
 | 26 | AC(29) src=0x44 | **Master** | Broadcast 0xAC master-side |
 | 27 | AC(29) src=0x56 | **Master** | Broadcast 0xAC iNEXT-side |
 
-**Jednorazowo po boot slave (~16s po power-on):**
-- Pozycja #1 zastąpiona ramką `E4(29) src=0x2A` (master config push adresowany do konkretnego slave id=2)
+**Zdarzenia asynchroniczne (poza cyklem master):**
 
-**Jednorazowo przy power-on slave'a sam Slave wysyła:**
-- `80(29) src=0x44 f[3]=0x2A` — slave boot announcement (raz po boot, nie w cyklu master)
+| Kiedy | Ramka | Nadawca | Rola |
+|-------|-------|---------|------|
+| Po power-on slave (1× jednorazowo, ~3-5s po starcie) | 80(29) src=0x44 f[3]=0x2A | **Slave** | Slave boot announcement (`80,44,5F,2A,7E×26,23`) |
+| ~16s po boot slave (1× w najbliższym cyklu master) | E4(29) src=0x2A | **Master** | Config push do slave id=2 — zastępuje pozycję #1 cyklu |
+| Co cykl po wykryciu AA(29)_44 (#22) | E4(29) src=0x21 f[3]=0x2A | **Slave** | Odpowiedź slave (~400ms po #22) — obecna gdy slave id=2 aktywny |
 
 **17 ramek dodatkowych (#11-13, #14, #15-21, #22-27) ma zawartość statyczną** (0x7E lub 0x00 fill) — enumeration/keepalive. Mimo to Master Full jest **wymagany** żeby Nano w trybie slave zaczął aktywnie komunikować się na magistrali (w Mini Nano slave jest całkowicie cichy). Konkretnie **AA(29) src=0x44 (#22)** jest wake-up'em dla Nano slave.
 
