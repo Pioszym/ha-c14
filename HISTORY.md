@@ -135,6 +135,27 @@ Po dodaniu trybu Master Full do ESP (27 ramek zamiast 10) zauważyliśmy że Nan
 
 **Lekcja:** jeśli odkryjesz jedną ramkę-trigger (typu AA/44, E3/44), sprawdź czy dalsze ramki w cyklu są w ogóle potrzebne. Protokoły enumeracji często mają wiele "pytań o typy" które odpadają jeśli masz znane wąskie grono urządzeń.
 
+## Master config push do slave — E4(29) src=0x2A (2026-04-23)
+
+Po wczorajszym odkryciu ramki slave-boot 80(2A), dziś zrobiliśmy kolejny power-cycle Nano slave id=2 (Nano master id=1, ESP w roli slave). W logach pojawiła się **unikalna, nigdy wcześniej nie widziana** ramka:
+
+```
+E4,2A,43,29,0D,01,05,28,1C,2A,00,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,53,23
+```
+
+Kluczowe cechy:
+- f[1] = 0x2A — dedykowane adresowanie do slave id=2 (nietypowe, normalnie broadcasty mają 0x21/0x44/0x56)
+- f[3] = 0x29 — subtyp master-mode
+- Wystąpiła **tylko 1 raz**, ~16s po power-on slave
+- Od f[14] do f[29] — identyczne jak w E3(29)_44 query (nastawy % per bieg)
+- f[4-13] — 10 bajtów nieznanej konfiguracji (może zawierać datę?)
+
+**Interpretacja:** to "master → slave config push" — master po wykryciu aktywnego slave (ESP wysyła E4(2A) w odpowiedzi na AA(44)) wysyła mu jednorazowo pełną konfigurację. To wyjaśnia zachowanie Nano slave widoczne wczoraj (zmiana encoding f[28] 0x43→0x03 po 80(2A)) — slave otrzymał config i zaktualizował stan.
+
+**Konsekwencja dla naszego ESP-master:** żeby Nano w roli slave dostało pełną synchronizację po boot, nasz ESP powinien wysyłać E4(29) src=0x2A (z aktualnymi setpointami + datą) w odpowiedzi na 80(2A). Obecny ESP-master nie robi tego — dlatego Nano slave nie synchronizuje RTC i trzyma stary czas.
+
+**TODO:** zmiana daty na Nano master + power cycle slave → porównanie różnic w f[4-13] identyfikuje które pole jest datą.
+
 ## Slave boot announcement — 80(2A) (2026-04-22 wieczór)
 
 Podczas testu z Nano slave id=2 + power cycle zaobserwowaliśmy nową ramkę której wcześniej nie widzieliśmy w żadnym cyklu master:

@@ -412,6 +412,28 @@ Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 
 ## Zachowanie urządzeń slave
 
+### Ramka E4(29) src=0x2A — master config push do slave id=2
+
+Obserwacja 2026-04-23: ~16s po power-on Nano slave id=2, Nano master jednorazowo wysłał:
+
+```
+E4,2A,43,29,[DATA],5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,53,23
+```
+
+Charakterystyczne:
+- **f[1] = 0x2A** — adresowanie do konkretnego slave id=2 (normalnie broadcasty mają f[1]=0x21 lub 0x44)
+- f[3] = 0x29 (master subtype)
+- Od f[14] do f[29] — identyczne jak w E3(29)_44 query (% per bieg, rotator, f[28] bieg marker)
+- f[4-13] = `0D,01,05,28,1C,2A,00,1E,01,17` — nieznane, hipoteza: data/godzina lub setpointy systemowe
+
+**Rola:** master "pushuje" konfigurację do slave'a po jego boot. Po tej ramce Nano slave przechodzi na nowy encoding (z stare `0x43` → nowe `0x03` w f[28] E4(2A)) — wcześniej to obserwowaliśmy jako "slave zmienił tryb po 80(2A)".
+
+**Timing:** ~16s po power-on slave. Prawdopodobnie master czeka aż slave się ustabilizuje przed config push.
+
+**Pole konfiguracyjne f[4-13] wymaga dedykowanego testu** — zmiana daty na Nano master + wymuszenie re-boot slave, porównanie zawartości.
+
+---
+
 ### Ramka 80(29) src=0x44 — slave boot announcement
 
 Gdy Nano w trybie slave (id ≠ 1) startuje (power-on), nadaje **jeden raz** ramkę typu 0x80:
