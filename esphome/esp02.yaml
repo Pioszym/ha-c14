@@ -1276,27 +1276,6 @@ button:
             - lambda: |-
                 ESP_LOGW("c14m","!!! Przycisk Boot 80(2A) dziala tylko w roli Slave !!!");
 
-  # Master Config Push E4(29) src=0x2X — trigger ręczny (automatycznie wystrzeliwuje po wykryciu 80 od slave)
-  # Ustawia flage g_config_push_pending → w nast. cyklu #1 wyslana E4(29) src=0x2X config push.
-  # Działa TYLKO gdy c14_rola = Master.
-  - platform: template
-    name: "Master Config Push (force)"
-    id: btn_master_config_push
-    icon: mdi:cog-refresh
-    on_press:
-      - if:
-          condition:
-            lambda: 'return id(g_master_on);'
-          then:
-            - lambda: |-
-                if (id(g_detected_slave_id) == 0) {
-                  id(g_detected_slave_id) = 0x2A;  // default id=2 jesli jeszcze nie wykryto
-                }
-                id(g_config_push_pending) = true;
-                ESP_LOGW("c14m", "*** Config push ZAPLANOWANY recznie (f[3]=0x%02X) ***", id(g_detected_slave_id));
-          else:
-            - lambda: |-
-                ESP_LOGW("c14m","!!! Master Config Push dziala tylko w roli Master !!!");
 
 sensor:
   - platform: template
