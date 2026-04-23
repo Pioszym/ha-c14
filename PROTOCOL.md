@@ -87,25 +87,27 @@ Przykłady: `11,36` = 23.0°C · `11,40` = 24.0°C · `11,04` = 18.0°C · `10,6
 
 ## Cykle master
 
-### Nano Master Mini (11 ramek, ~8.5s) — obserwowane
+### Master Mini (11 ramek, ~8.5s) — obserwowane
 
-Nano sekwencja: komenda biegu najpierw, trigger QUERY zaraz po, potem reszta broadcastów.
+Sekwencja Master Mini: komenda biegu najpierw, trigger QUERY zaraz po, potem reszta broadcastów.
 
 | # | Ramka | Nadawca | Rola |
 |---|-------|---------|------|
-| 1 | E4(29) src=0x21 | Nano | Komenda biegu + zegar |
-| 2 | E3(29) src=0x44 | Nano | **QUERY — trigger AERO** |
-| 3 | E4(63) src=0x21 | **AERO** | **Jedyna ramka od AERO** (odpowiedź, ~400ms po triggerze) |
-| 4 | E3(29) src=0x56 | Nano | iNEXT slot (zera) |
-| 5 | E2(29) src=0x44 | Nano | Status broadcast |
-| 6 | E5(29) src=0x21 | Nano | Setpointy temperatur + bypass |
-| 7 | F0(29) src=0x44 | Nano | Heartbeat (0x7E fill) |
-| 8 | 81(29) src=0x44 | Nano | Heartbeat Nano |
-| 9 | D0(29) src=0x44 | Nano | Slave config 1 |
-| 10 | D1(29) src=0x44 | Nano | Slave config 2 |
-| 11 | D2(29) src=0x44 | Nano | Slave config 3 |
+| 1 | E4(29) src=0x21 | **Master** | Komenda biegu + zegar |
+| 2 | E3(29) src=0x44 | **Master** | **QUERY — trigger AERO** |
+| 3 | E4(63) src=0x21 | **AERO** | Odpowiedź AERO (~400ms po triggerze) |
+| 4 | E3(29) src=0x56 | **Master** | iNEXT slot (zera) |
+| 5 | E2(29) src=0x44 | **Master** | Status broadcast |
+| 6 | E5(29) src=0x21 | **Master** | Setpointy temperatur + bypass |
+| 7 | F0(29) src=0x44 | **Master** | Heartbeat (0x7E fill) |
+| 8 | 81(29) src=0x44 | **Master** | Heartbeat Master |
+| 9 | D0(29) src=0x44 | **Master** | Slave config 1 |
+| 10 | D1(29) src=0x44 | **Master** | Slave config 2 |
+| 11 | D2(29) src=0x44 | **Master** | Slave config 3 |
 
-### Nano Master Full (27 ramek, ~22s) — obserwowane
+Uwaga: w Master Mini Nano slave jest **cichy** — nie odpowiada na żadną ramkę. Dla aktywacji slave potrzebna AA(29) src=0x44 z Master Full.
+
+### Master Full (27 ramek, ~22s) — obserwowane
 
 Master Full to rozszerzona wersja Mini, aktywowana w menu serwisowym Nano (TRYB W SIECI C14 = MASTER). Dodaje 17 ramek enumeration/keepalive dla rzadkich slave ID. **E3(29)_44 występuje DWA razy w cyklu** — AERO odpowiada E4(63) dwukrotnie per cykl (~10s + ~13s split).
 
@@ -113,35 +115,42 @@ Pełna sekwencja w kolejności nadawania:
 
 | # | Ramka | Nadawca | Rola |
 |---|-------|---------|------|
-| 1 | E4(29) src=0x21 | Nano | **Komenda biegu + zegar** (lub jednorazowo E4(29) src=0x2A config push po boot slave) |
-| 2 | E3(29) src=0x44 | Nano | **QUERY #1 — trigger AERO** |
-| (AERO) | E4(63) src=0x21 | **AERO** | Odpowiedź (~400ms po #2) |
-| 3 | E3(29) src=0x56 | Nano | iNEXT slot (zera) |
-| 4 | E2(29) src=0x44 | Nano | Status broadcast (stałe) |
-| 5 | E5(29) src=0x21 | Nano | Setpointy temperatur + bypass + sezon |
-| 6 | F0(29) src=0x44 | Nano | Heartbeat (0x7E fill) |
-| 7 | 81(29) src=0x44 | Nano | Heartbeat Nano master |
-| 8 | D0(29) src=0x44 | Nano | Slave config 1 |
-| 9 | D1(29) src=0x44 | Nano | Slave config 2 |
-| 10 | D2(29) src=0x44 | Nano | Slave config 3 |
-| 11 | D3(29) src=0x44 | Nano | Slave config 4 |
-| 12 | D4(29) src=0x44 | Nano | Slave config 5 |
-| 13 | D5(29) src=0x44 | Nano | Slave config 6 |
-| 14 | E3(29) src=0x44 | Nano | **QUERY #2 — drugi trigger** (identyczne jak #2) |
-| (AERO) | E4(63) src=0x21 | **AERO** | Druga odpowiedź AERO |
-| 15 | 8B(29) src=0x44 | Nano | Heartbeat slave ID 0x8B (0x7E fill) |
-| 16 | 9F(29) src=0x44 | Nano | Heartbeat 0x9F |
-| 17 | 82(29) src=0x44 | Nano | Heartbeat 0x82 |
-| 18 | 8C(29) src=0x44 | Nano | Heartbeat 0x8C |
-| 19 | 8D(29) src=0x44 | Nano | Heartbeat 0x8D |
-| 20 | 8E(29) src=0x44 | Nano | Heartbeat 0x8E |
-| 21 | 95(29) src=0x44 | Nano | Heartbeat 0x95 |
-| 22 | AA(29) src=0x44 | Nano | Broadcast 0xAA master-side (0x7E fill) |
-| 23 | AA(29) src=0x56 | Nano | Broadcast 0xAA iNEXT-side (0x00 fill) |
-| 24 | AB(29) src=0x44 | Nano | Broadcast 0xAB master-side |
-| 25 | AB(29) src=0x56 | Nano | Broadcast 0xAB iNEXT-side |
-| 26 | AC(29) src=0x44 | Nano | Broadcast 0xAC master-side |
-| 27 | AC(29) src=0x56 | Nano | Broadcast 0xAC iNEXT-side |
+| 1 | E4(29) src=0x21 | **Master** | Komenda biegu + zegar (lub jednorazowo E4(29) src=0x2A config push po boot slave) |
+| 2 | E3(29) src=0x44 | **Master** | **QUERY #1 — trigger AERO** |
+| — | E4(63) src=0x21 | **AERO** | Odpowiedź AERO #1 (~400ms po #2) |
+| 3 | E3(29) src=0x56 | **Master** | iNEXT slot (zera) |
+| 4 | E2(29) src=0x44 | **Master** | Status broadcast (stałe) |
+| 5 | E5(29) src=0x21 | **Master** | Setpointy temperatur + bypass + sezon |
+| 6 | F0(29) src=0x44 | **Master** | Heartbeat (0x7E fill) |
+| 7 | 81(29) src=0x44 | **Master** | Heartbeat Master |
+| 8 | D0(29) src=0x44 | **Master** | Slave config 1 |
+| 9 | D1(29) src=0x44 | **Master** | Slave config 2 |
+| 10 | D2(29) src=0x44 | **Master** | Slave config 3 |
+| 11 | D3(29) src=0x44 | **Master** | Slave config 4 |
+| 12 | D4(29) src=0x44 | **Master** | Slave config 5 |
+| 13 | D5(29) src=0x44 | **Master** | Slave config 6 |
+| 14 | E3(29) src=0x44 | **Master** | **QUERY #2 — drugi trigger** (identyczne jak #2) |
+| — | E4(63) src=0x21 | **AERO** | Odpowiedź AERO #2 |
+| 15 | 8B(29) src=0x44 | **Master** | Heartbeat slave ID 0x8B (0x7E fill) |
+| 16 | 9F(29) src=0x44 | **Master** | Heartbeat 0x9F |
+| 17 | 82(29) src=0x44 | **Master** | Heartbeat 0x82 |
+| 18 | 8C(29) src=0x44 | **Master** | Heartbeat 0x8C |
+| 19 | 8D(29) src=0x44 | **Master** | Heartbeat 0x8D |
+| 20 | 8E(29) src=0x44 | **Master** | Heartbeat 0x8E |
+| 21 | 95(29) src=0x44 | **Master** | Heartbeat 0x95 |
+| 22 | AA(29) src=0x44 | **Master** | **Wake-up dla slave id=2** (0x7E fill) |
+| — | E4(29) src=0x21 f[3]=0x2A | **Slave** | **Odpowiedź slave** E4(2A) (~400ms po #22, jeśli slave obecny) |
+| 23 | AA(29) src=0x56 | **Master** | Broadcast 0xAA iNEXT-side (0x00 fill) |
+| 24 | AB(29) src=0x44 | **Master** | Broadcast 0xAB master-side |
+| 25 | AB(29) src=0x56 | **Master** | Broadcast 0xAB iNEXT-side |
+| 26 | AC(29) src=0x44 | **Master** | Broadcast 0xAC master-side |
+| 27 | AC(29) src=0x56 | **Master** | Broadcast 0xAC iNEXT-side |
+
+**Jednorazowo po boot slave (~16s po power-on):**
+- Pozycja #1 zastąpiona ramką `E4(29) src=0x2A` (master config push adresowany do konkretnego slave id=2)
+
+**Jednorazowo przy power-on slave'a sam Slave wysyła:**
+- `80(29) src=0x44 f[3]=0x2A` — slave boot announcement (raz po boot, nie w cyklu master)
 
 **17 ramek dodatkowych (#11-13, #14, #15-21, #22-27) ma zawartość statyczną** (0x7E lub 0x00 fill) — enumeration/keepalive. Mimo to Master Full jest **wymagany** żeby Nano w trybie slave zaczął aktywnie komunikować się na magistrali (w Mini Nano slave jest całkowicie cichy). Konkretnie **AA(29) src=0x44 (#22)** jest wake-up'em dla Nano slave.
 
@@ -151,17 +160,22 @@ Pełna sekwencja w kolejności nadawania:
 
 Kolejność zgodna z Nano Master Mini: E4 pierwsze, QUERY drugie, reszta broadcastów. 10 ramek × 800ms = 8s cykl, interval 8500ms. Opcjonalny tryb Full (switch `c14_master_full`) rozszerza cykl do 27 ramek jak Nano Master Full.
 
-| # | Ramka | Rola |
-|---|-------|------|
-| 1 | E4(29) src=0x21 | Komenda biegu + zegar + sezon + wietrzenie |
-| 2 | E3(29) src=0x44 | **QUERY — trigger AERO** |
-| 3 | E3(29) src=0x56 | iNEXT slot (rezerwacja) |
-| 4 | E2(29) src=0x44 | Status broadcast |
-| 5 | E5(29) src=0x21 | Setpointy temp + bypass + sezon |
-| 6 | F0(29) src=0x44 | Heartbeat |
-| 7 | 81(29) src=0x44 | Heartbeat Nano |
-| 8-10 | D0/D1/D2(29) src=0x44 | Slave config |
-| 11-27 | (tylko gdy `c14_master_full=ON`) | Ramki Master Full |
+| # | Ramka | Nadawca | Rola |
+|---|-------|---------|------|
+| 1 | E4(29) src=0x21 | **Master (ESP)** | Komenda biegu + zegar + sezon + wietrzenie |
+| 2 | E3(29) src=0x44 | **Master (ESP)** | **QUERY — trigger AERO** |
+| — | E4(63) src=0x21 | **AERO** | Odpowiedź AERO (~400ms po #2) |
+| 3 | E3(29) src=0x56 | **Master (ESP)** | iNEXT slot (rezerwacja) |
+| 4 | E2(29) src=0x44 | **Master (ESP)** | Status broadcast |
+| 5 | E5(29) src=0x21 | **Master (ESP)** | Setpointy temp + bypass + sezon |
+| 6 | F0(29) src=0x44 | **Master (ESP)** | Heartbeat |
+| 7 | 81(29) src=0x44 | **Master (ESP)** | Heartbeat Master |
+| 8-10 | D0/D1/D2(29) src=0x44 | **Master (ESP)** | Slave config |
+| 11-27 | (tylko gdy `c14_master_full=ON`) | **Master (ESP)** | Ramki Master Full (w tym #22 AA wake-up) |
+
+**ESP w roli Slave (select.c14_rola = Slave):**
+- ESP odpowiada **E4(29) src=0x21 f[3]=0x2A** (~400ms) po każdej wykrytej ramce AA(29) src=0x44 od Nano mastera
+- Button `Slave Boot 80(2A)` ręcznie wysyła symulowany `80(29) src=0x44 f[3]=0x2A` (slave boot announcement)
 
 AERO odpowiada E4(63) ~400ms po ramce QUERY. W trybie Full AERO odpowiada 2× per cykl (po #2 i po #14).
 
