@@ -178,6 +178,8 @@ Interpretacja: 80(2A) to pewnie "slave ready / boot complete" announcement. Tłu
 
 **TODO:** zarejestrować co master (Nano nr 1) wysyła ~400ms po otrzymaniu 80(2A) — prawdopodobnie jest jakaś odpowiedź z datą. To wymagałoby testu z Nano master + Nano slave + ESP tylko jako sniffer.
 
+**Aktualizacja 2026-04-23:** zebrane 3 obserwacje 80(2A) na różnych pozycjach cyklu master (#5-6, #27-1, #10-11) **potwierdzają losowy timing** — Nano slave wysyła ramkę gdy tylko zakończy boot, w pierwszą dostępną lukę na busie. NIE jest to ramka na specific slot. Sam "master response" E4(29) src=0x2A pojawia się natomiast zawsze w najbliższym cyklu master na pozycji #1 (zastępując E4(29) src=0x21).
+
 ## Data nie jest transmitowana przez C14 (2026-04-22)
 
 Test zmiany daty/godziny na Nano master w trakcie logu bridge:
