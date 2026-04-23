@@ -135,6 +135,21 @@ Po dodaniu trybu Master Full do ESP (27 ramek zamiast 10) zauważyliśmy że Nan
 
 **Lekcja:** jeśli odkryjesz jedną ramkę-trigger (typu AA/44, E3/44), sprawdź czy dalsze ramki w cyklu są w ogóle potrzebne. Protokoły enumeracji często mają wiele "pytań o typy" które odpadają jeśli masz znane wąskie grono urządzeń.
 
+## Hipoteza: E5(29) f[26] = Slave ACK flag (2026-04-23 wieczór)
+
+Podczas testu ESP w roli Slave + Nano master, po wciśnięciu **Slave Boot 80(2A)** i aktywacji reactive E4(2A) na AA(44), zauważyliśmy że Nano master **zmienił f[26] w E5(29) z `0x00` na `0x50`**.
+
+- We wszystkich wcześniejszych logach (przed dzisiejszym testem) E5(29) f[26] = `0x00` stale
+- W logach `slave_boot_test.log` (dzisiejszy test) pojawiła się wartość `0x50` po aktywacji slave
+
+**Hipoteza:** `f[26]=0x50` to flaga "slave acknowledged" — Nano master ustawia ją gdy wykryje aktywnego slave na busie. To byłaby alternatywa do dedykowanej ramki ACK (którą my obserwowaliśmy rano jako E4(29) src=0x2A config push, ale nasz fake 80 dzisiaj jej nie wywołał).
+
+**Niepewne:**
+- Timing zmiany vs BOOT — pierwszy 0x50 ~22 min po pierwszym BOOT, nie natychmiast
+- Może korelacja z innym zdarzeniem (np. nasze reactive E4(2A) na AA przez dłuższy czas)
+
+**Do weryfikacji:** obserwacja power cycle slave'a w izolowanym teście bez historii wcześniejszych interakcji.
+
 ## Master config push do slave — E4(29) src=0x2A (2026-04-23)
 
 Po wczorajszym odkryciu ramki slave-boot 80(2A), dziś zrobiliśmy kolejny power-cycle Nano slave id=2 (Nano master id=1, ESP w roli slave). W logach pojawiła się **unikalna, nigdy wcześniej nie widziana** ramka:

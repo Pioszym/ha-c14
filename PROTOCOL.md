@@ -344,18 +344,32 @@ Nano → magistrala. 5 setpointów temperatury, bypass enum, sezon enum.
 E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECO_H],[ECO_L],[CHL_H],[CHL_L],[RCZ_H],[RCZ_L],[POZ_H],[POZ_L],00,30,7E,00,7E,00,00,[BP],00,[SEZ],[UI],23
 ```
 
-| Bajty | Znaczenie | Status |
-|-------|-----------|--------|
-| f[6-7] | **T.Czerpnia** (kopia z AERO E4(63), NIE sensor pokojowy) | KNOWN |
-| f[8-9] | **Comfort** setpoint | KNOWN |
-| f[10-11] | **Eco** setpoint | KNOWN |
-| f[12-13] | **Chłodzenie** setpoint | KNOWN |
-| f[14-15] | **Zadana ręczna** setpoint | KNOWN |
-| f[16-17] | **Poza domem** setpoint | KNOWN |
-| f[18-19] | `00,30` stałe, niezależne od lato/zima/chłodz | UNKNOWN |
-| f[25] | **Bypass enum** (patrz niżej) | KNOWN |
-| f[27] | **Sezon enum** (patrz niżej) | KNOWN |
-| f[28] | **Kod UI Nano** (stan ekranu — złożony enum) | PARTIAL |
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[0] | `0xE5` | ID ramki | KNOWN |
+| f[1] | `0x21` | marker typu (komenda master) | KNOWN |
+| f[2] | zmienne | checksum (K=0x23) | KNOWN |
+| f[3] | `0x29` | subtyp (master id=1) | KNOWN |
+| f[4] | `0x00` | stałe zero | UNKNOWN (filler?) |
+| f[5] | `0x00` | stałe zero | UNKNOWN (filler?) |
+| f[6-7] | HH,LL | **T.Czerpnia** (kopia z AERO E4(63), NIE sensor pokojowy) | KNOWN |
+| f[8-9] | HH,LL | **Comfort** setpoint | KNOWN |
+| f[10-11] | HH,LL | **Eco** setpoint | KNOWN |
+| f[12-13] | HH,LL | **Chłodzenie** setpoint | KNOWN |
+| f[14-15] | HH,LL | **Zadana ręczna** setpoint | KNOWN |
+| f[16-17] | HH,LL | **Poza domem** setpoint | KNOWN |
+| f[18] | `0x00` | stałe | UNKNOWN |
+| f[19] | `0x30` | stałe (niezależne od lato/zima/chłodz) | UNKNOWN |
+| f[20] | `0x7E` | stałe (filler) | UNKNOWN |
+| f[21] | `0x00` | stałe | UNKNOWN |
+| f[22] | `0x7E` | stałe (filler) | UNKNOWN |
+| f[23] | `0x00` | stałe | UNKNOWN |
+| f[24] | `0x00` | stałe | UNKNOWN |
+| f[25] | `0x60/0x61/0x62` | **Bypass enum** (patrz niżej) | KNOWN |
+| f[26] | `0x00` normalnie / `0x50` gdy slave aktywny | **Slave ACK flag** (hipoteza — obserwacja 2026-04-23 po aktywacji ESP slave na busie) | PARTIAL |
+| f[27] | `0x00/0x0A/0x14` | **Sezon enum** (patrz niżej) | KNOWN |
+| f[28] | `0x00-0x1F` | **Kod UI Nano** (stan ekranu — złożony enum) | PARTIAL |
+| f[29] | `0x23` | terminator | KNOWN |
 
 ### Bypass (f[25]) — 3-stanowy enum
 | Kod | Stan | AERO reakcja |
