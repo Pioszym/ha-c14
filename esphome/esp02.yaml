@@ -28,6 +28,13 @@ time:
     id: ha_time
     timezone: Europe/Warsaw
 
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+
+bluetooth_proxy:
+  active: true
+
 ################################################################################
 # C14 ESP32 MASTER — TX do AERO przez uart_aero (GPIO16/17)
 #
@@ -92,6 +99,9 @@ globals:
     type: bool
     restore_value: true
     initial_value: "false"   # sterowane z select.c14_rola
+  - id: g_slave_active
+    type: bool
+    initial_value: "false"   # aktywuje sie po wcisnieciu Slave Boot (E4(2A) reactive)
   - id: g_forward_on
     type: bool
     initial_value: "false"   # domyslnie OFF zeby nie kolidowal z masterem
@@ -821,8 +831,8 @@ interval:
                   f[0], f[3], f[1], h);
               }
               // Nano E3(29)_44 -> tylko do podgladu/logu, slidery nie nadpisywane
-              // Slave wake-up: AA(29) src=0x44 od Nano master → ESP odpowiada E4(2A)
-              if (f[0] == 0xAA && f[1] == 0x44 && f[3] == 0x29 && id(g_slave_on)) {
+              // Slave reactive: AA(29) src=0x44 → ESP odpowiada E4(2A) TYLKO gdy slave AKTYWNY (po Slave Boot)
+              if (f[0] == 0xAA && f[1] == 0x44 && f[3] == 0x29 && id(g_slave_on) && id(g_slave_active)) {
                 id(slave_respond).execute();
               }
               id(g_cnt_nano)++;
@@ -965,16 +975,19 @@ select:
             }
             id(g_master_on) = true;
             id(g_slave_on) = false;
+            id(g_slave_active) = false;
             id(g_cycle_count) = 0;
             id(g_aero_resp_total) = 0;
             ESP_LOGW("c14m","=== ROLA: MASTER ===");
           } else if (x == "Slave") {
             id(g_master_on) = false;
             id(g_slave_on) = true;
-            ESP_LOGW("c14m","=== ROLA: SLAVE id=2 (E4(2A) po AA(44)) ===");
+            id(g_slave_active) = false;  // cisza az do Slave Boot
+            ESP_LOGW("c14m","=== ROLA: SLAVE id=2 (cichy — wcisnij Slave Boot by aktywowac) ===");
           } else {
             id(g_master_on) = false;
             id(g_slave_on) = false;
+            id(g_slave_active) = false;
             ESP_LOGW("c14m","=== ROLA: OFF (pasywny) ===");
           }
 
@@ -1097,6 +1110,7 @@ number:
     mode: slider
     set_action:
       - lambda: 'id(g_naw_b3) = (uint8_t)x;'
+
   - platform: template
     name: "% Wywiew Bieg 3"
     id: n_wyw_b3
@@ -1126,6 +1140,7 @@ number:
     mode: slider
     set_action:
       - lambda: 'id(g_naw_wiet) = (uint8_t)x;'
+      
   - platform: template
     name: "% Wywiew Wietrzenie"
     id: n_wyw_wiet
@@ -1215,8 +1230,8 @@ number:
 
 button:
   # Symulacja slave boot announcement 80(2A) src=0x44
-  # Wysyła ramkę typu Nano slave wysyła jednorazowo po power-on.
-  # Działa TYLKO gdy c14_rola = Slave (inaczej kolizja z master TX).
+  # Wysyła 80(2A) i aktywuje slave (odtąd reactive E4(2A) na AA(44) dziala).
+  # Działa TYLKO gdy c14_rola = Slave.
   - platform: template
     name: "Slave Boot 80(2A)"
     id: btn_slave_boot
@@ -1233,10 +1248,42 @@ button:
                   0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
                 id(uart_aero).write_array(f.data(), f.size());
                 id(uart_nano).write_array(f.data(), f.size());
-                ESP_LOGW("c14m", ">>> BOOT_80_2A_SLAVE 80,44,5F,2A,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,23");
+                id(g_slave_active) = true;
+                ESP_LOGW("c14m", ">>> BOOT_80_2A_SLAVE (slave aktywowany, E4(2A) reactive ON) 80,44,5F,2A,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,23");
           else:
             - lambda: |-
                 ESP_LOGW("c14m","!!! Przycisk Boot 80(2A) dziala tylko w roli Slave !!!");
+
+  # Master Config Push E4(29) src=0x2A — symulacja Nano master response do slave id=2 po boot
+  # Wysyła ramkę config push z f[4-13] zaobserwowanymi od Nano mastera.
+  # Działa TYLKO gdy c14_rola = Master.
+  - platform: template
+    name: "Master Config Push E4(29) src=0x2A"
+    id: btn_master_config_push
+    icon: mdi:cog-refresh
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(g_master_on);'
+          then:
+            - lambda: |-
+                std::vector<uint8_t> f = {
+                  0xE4,0x2A,0x00,0x29,0x0D,0x01,0x05,0x28,0x1C,0x2A,0x00,0x1E,
+                  0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
+                  0x2D,0x4B,0x20,0x01,0x53,0x23 };
+                // Cksum dla src=0x2A (K=0xA3 jak dla E4)
+                uint16_t s = f[0] + f[1];
+                for (int i = 3; i <= 28; i++) s += f[i];
+                f[2] = (s + 0xA3) & 0xFF;
+                id(uart_aero).write_array(f.data(), f.size());
+                id(uart_nano).write_array(f.data(), f.size());
+                char h[120]; int p = 0;
+                for (size_t i = 0; i < f.size() && p < 110; i++)
+                  p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                ESP_LOGW("c14m", ">>> MASTER_CONFIG_PUSH_E4_2A %s", h);
+          else:
+            - lambda: |-
+                ESP_LOGW("c14m","!!! Przycisk Master Config Push dziala tylko w roli Master !!!");
 
 sensor:
   - platform: template
