@@ -284,6 +284,52 @@ Nano oferuje 3 programy użytkownika (TRYB PRACY): 🕐 Normal/Harmonogram, 🏠
 
 ---
 
+## Ramka E3(29) src=0x44 — QUERY (TRIGGER AERO!)
+
+**Najważniejsza ramka** — bez niej AERO nie odpowiada. Po wysłaniu tej ramki, AERO odpowiada E4(63) w ~400ms.
+
+Zawiera nastawy % nawiewu/wywiewu per bieg (8 wartości).
+
+```
+E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,[WIET_WYW],[WIET_NAW],18,14,00,[B1_WYW],[B2_WYW],[B3_WYW],[B1_NAW],[B2_NAW],[B3_NAW],20,01,[BIEG+10h],23
+```
+
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[0] | `0xE3` | ID ramki | KNOWN |
+| f[1] | `0x44` | marker typu (query) | KNOWN |
+| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
+| f[3] | `0x29` | subtyp | KNOWN |
+| f[4] | `0x32` | stałe (=50) | UNKNOWN |
+| f[5] | `0x00` | stałe | UNKNOWN |
+| f[6] | `0x05` | stałe | UNKNOWN |
+| f[7] | `0x0A` | stałe (=10) | UNKNOWN |
+| f[8] | `0x28` | stałe (=40) | UNKNOWN |
+| f[9] | `0x1C` | stałe (=28) | UNKNOWN |
+| f[10] | `0x2A` | stałe (=42) | UNKNOWN |
+| f[11] | `0x1E` | stałe (=30) | UNKNOWN |
+| f[12] | `0x01` | stałe | UNKNOWN |
+| f[13] | `0x17` | stałe (=23) | UNKNOWN |
+| f[14] | `0x5F`=95 | **Wietrzenie wywiew %** | KNOWN |
+| f[15] | `0x64`=100 | **Wietrzenie nawiew %** | KNOWN |
+| f[16] | `0x18` | stałe (=24) | UNKNOWN |
+| f[17] | `0x14` | stałe (=20) | UNKNOWN |
+| f[18] | `0x00` | stałe | UNKNOWN |
+| f[19] | `0x24` | stałe (=36) | UNKNOWN |
+| f[20] | `0x20`=32 | **B1 wywiew %** | KNOWN |
+| f[21] | `0x28`=40 | **B2 wywiew %** | KNOWN |
+| f[22] | `0x46`=70 | **B3 wywiew %** | KNOWN |
+| f[23] | `0x25`=37 | **B1 nawiew %** | KNOWN |
+| f[24] | `0x2D`=45 | **B2 nawiew %** | KNOWN |
+| f[25] | `0x4B`=75 | **B3 nawiew %** | KNOWN |
+| f[26] | `0x20` | stałe | UNKNOWN |
+| f[27] | `0x01` | stałe | UNKNOWN |
+| f[28] | `0x11-0x17` | **Znacznik biegu** = `E4 f[28] + 0x10` (manual B1 → `0x13`, Stop → `0x11`) | KNOWN |
+| f[29] | `0x23` | terminator | KNOWN |
+
+---
+
+
 ## Ramka E4(63) — ODPOWIEDŹ AERO (src=0x21)
 
 **Jedyna ramka nadawana przez AERO.** Odpowiedź na trigger E3(29) src=0x44, przychodzi w ~400ms po triggerze.
@@ -329,6 +375,7 @@ E4,21,[cks],63,09,74,00,3C,00,00,[CZ_H],[CZ_L],[CZ_H],[CZ_L],[NW_H],[NW_L],[WT_H
 | Wietrz. | `0x64` (100%) | `0x5F` (95%) |
 
 ---
+
 
 ## Ramka E5(29) — SETPOINTY + bypass + sezon (src=0x21)
 
@@ -398,61 +445,14 @@ Obserwowane wartości (niejednolite, zależy od ścieżki nawigacji w Nano):
 
 ---
 
-## Ramka E3(29) src=0x44 — QUERY (TRIGGER AERO!)
-
-**Najważniejsza ramka** — bez niej AERO nie odpowiada. Po wysłaniu tej ramki, AERO odpowiada E4(63) w ~400ms.
-
-Zawiera nastawy % nawiewu/wywiewu per bieg (8 wartości).
-
-```
-E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,[WIET_WYW],[WIET_NAW],18,14,00,[B1_WYW],[B2_WYW],[B3_WYW],[B1_NAW],[B2_NAW],[B3_NAW],20,01,[BIEG+10h],23
-```
-
-| Bajt | Wartość | Znaczenie | Status |
-|------|---------|-----------|--------|
-| f[0] | `0xE3` | ID ramki | KNOWN |
-| f[1] | `0x44` | marker typu (query) | KNOWN |
-| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
-| f[3] | `0x29` | subtyp | KNOWN |
-| f[4] | `0x32` | stałe (=50) | UNKNOWN |
-| f[5] | `0x00` | stałe | UNKNOWN |
-| f[6] | `0x05` | stałe | UNKNOWN |
-| f[7] | `0x0A` | stałe (=10) | UNKNOWN |
-| f[8] | `0x28` | stałe (=40) | UNKNOWN |
-| f[9] | `0x1C` | stałe (=28) | UNKNOWN |
-| f[10] | `0x2A` | stałe (=42) | UNKNOWN |
-| f[11] | `0x1E` | stałe (=30) | UNKNOWN |
-| f[12] | `0x01` | stałe | UNKNOWN |
-| f[13] | `0x17` | stałe (=23) | UNKNOWN |
-| f[14] | `0x5F`=95 | **Wietrzenie wywiew %** | KNOWN |
-| f[15] | `0x64`=100 | **Wietrzenie nawiew %** | KNOWN |
-| f[16] | `0x18` | stałe (=24) | UNKNOWN |
-| f[17] | `0x14` | stałe (=20) | UNKNOWN |
-| f[18] | `0x00` | stałe | UNKNOWN |
-| f[19] | `0x24` | stałe (=36) | UNKNOWN |
-| f[20] | `0x20`=32 | **B1 wywiew %** | KNOWN |
-| f[21] | `0x28`=40 | **B2 wywiew %** | KNOWN |
-| f[22] | `0x46`=70 | **B3 wywiew %** | KNOWN |
-| f[23] | `0x25`=37 | **B1 nawiew %** | KNOWN |
-| f[24] | `0x2D`=45 | **B2 nawiew %** | KNOWN |
-| f[25] | `0x4B`=75 | **B3 nawiew %** | KNOWN |
-| f[26] | `0x20` | stałe | UNKNOWN |
-| f[27] | `0x01` | stałe | UNKNOWN |
-| f[28] | `0x11-0x17` | **Znacznik biegu** = `E4 f[28] + 0x10` (manual B1 → `0x13`, Stop → `0x11`) | KNOWN |
-| f[29] | `0x23` | terminator | KNOWN |
-
----
-
-## Pozostałe ramki (broadcast, statyczne)
-
-### E2(29) src=0x44 — status broadcast
-Niemal stałe bajty (`f[4]=0x4D`, `f[8]=0x03`, reszta `0x7E`/zera). Rola nieznana.
 
 ### F0(29) src=0x44 — heartbeat
 Prawie puste: `F0,44,4E,29,7E×25,23`.
 
+
 ### 81(29) src=0x44 — heartbeat Nano
 Prawie puste: `81,44,5F,29,7E×25,23`.
+
 
 ### D0/D1/D2(29) src=0x44 — slave config (identyczne payload)
 ```
@@ -462,10 +462,20 @@ D0/D1/D2,44,[cks],29,53,4B,41,07,68,07,04,00,6E,00,5A,7E×14,23
 - `f[7-14]` = stałe dane config (rola nieznana — prawdopodobnie slot/adres slave'ów w konfiguracji AERO)
 - Różni się tylko `f[0]` (D0/D1/D2) i `f[2]` (cksum)
 
+
+---
+
+## Pozostałe ramki w cyklu (broadcasty/slots)
+
 ### E3(29) src=0x56 — iNEXT slot
 Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 
 ---
+
+
+### E2(29) src=0x44 — status broadcast
+Niemal stałe bajty (`f[4]=0x4D`, `f[8]=0x03`, reszta `0x7E`/zera). Rola nieznana.
+
 
 ## Zachowanie urządzeń slave
 
