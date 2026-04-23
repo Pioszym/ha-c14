@@ -102,6 +102,12 @@ globals:
   - id: g_slave_active
     type: bool
     initial_value: "false"   # aktywuje sie po wcisnieciu Slave Boot (E4(2A) reactive)
+  - id: g_config_push_pending
+    type: bool
+    initial_value: "false"   # flaga: wykryto 80(2A), w nast. cyklu #1 wyslij E4(29) src=0x2A
+  - id: g_detected_slave_id
+    type: uint8_t
+    initial_value: "0"       # id slave (z f[3] w 80(2A), np. 0x2A = id=2)
   - id: g_forward_on
     type: bool
     initial_value: "false"   # domyslnie OFF zeby nie kolidowal z masterem
@@ -258,21 +264,35 @@ script:
           id(g_cycle_count)++;
 
       # 1. E4(29) — komenda biegu + sezon + wietrzenie (PIERWSZA jak u Nano)
-      # f[8-9]=zegar, f[12-13]=temp pokojowa (copy z cache), f[14-15]=aktywny setpoint Comfort,
-      # f[27]=sezon (0x00/0x08/0x10) + bit 0x20 wietrzenie + bity 0-1 tryb temp manual (0x02),
-      # f[28]=bieg manual (0x01/03/05/07) + overlay chlodz (0x08) gdy sezon=Chlodzenie
+      # LUB jednorazowo E4(29) src=0x2A config push gdy wykryto 80(2A) od slave (g_config_push_pending)
       - script.execute:
           id: tx_frame
           name: "1"
           bytes: !lambda |-
+            // Jesli flaga pending → wyslij config push E4(29) src=0x2A
+            if (id(g_config_push_pending)) {
+              std::vector<uint8_t> f = {
+                0xE4, id(g_detected_slave_id), 0x00, 0x29,
+                0x0D,0x01,0x05,0x28,0x1C,0x2A,0x00,0x1E,
+                0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,
+                0x20,0x28,0x46,0x25,0x2D,0x4B,0x20,0x01,
+                0x53,0x23 };
+              uint16_t s2 = f[0] + f[1];
+              for (int i = 3; i <= 28; i++) s2 += f[i];
+              f[2] = (s2 + 0xA3) & 0xFF;
+              id(g_config_push_pending) = false;
+              ESP_LOGW("c14m", "*** CONFIG PUSH E4(29) src=0x%02X wyslany ***", id(g_detected_slave_id));
+              return f;
+            }
+            // Standard E4(29) src=0x21
             std::vector<uint8_t> f = {
               0xE4,0x21,0x00,0x29,0x0A,0x40,0x00,0x02,0x08,0x2E,0x7E,0x00,
               0x11,0x0E,0x11,0x22,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
               0x14,0x64,0x02,0x04,0x00,0x03,0x23 };
             auto t = id(ha_time).now();
             if (t.is_valid()) {
-              f[4] = t.day_of_month & 0xFF;   // dzien miesiaca
-              f[7] = t.day_of_week & 0xFF;    // dzien tygodnia (1=Mon, 7=Sun)
+              f[4] = t.day_of_month & 0xFF;
+              f[7] = t.day_of_week & 0xFF;
               f[8] = t.hour & 0xFF;
               f[9] = t.minute & 0xFF;
             }
@@ -282,17 +302,13 @@ script:
               f[idx] = (v / 128) & 0xFF;
               f[idx+1] = (v % 128) & 0xFF;
             };
-            // f[12-13] = temp pokojowa (u Nano to sensor CTP, u nas przyblizenie z Comfort setpoint)
             enc(12, id(g_sp_comfort));
-            // f[14-15] = aktywny setpoint (Comfort jako default)
             enc(14, id(g_sp_comfort));
-            // f[27]: bity 0-1 = tryb temp (manual=0x02), bity 3-5 = sezon + wietrzenie
-            uint8_t v27 = 0x02;  // temp manual
+            uint8_t v27 = 0x02;
             if (id(g_season) == 1) v27 |= 0x08;
             else if (id(g_season) == 2) v27 |= 0x10;
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
-            // f[28]: bieg manual + overlay chlodz
             uint8_t v28 = id(g_gear_cmd);
             if (id(g_season) == 2) v28 |= 0x08;
             f[28] = v28;
@@ -835,6 +851,12 @@ interval:
               if (f[0] == 0xAA && f[1] == 0x44 && f[3] == 0x29 && id(g_slave_on) && id(g_slave_active)) {
                 id(slave_respond).execute();
               }
+              // Master reactive: 80(29) src=0x44 f[3]=0x2X (slave boot announcement) → zaplanuj config push E4(29) src=0x2X na nast. pozycji #1
+              if (f[0] == 0x80 && f[1] == 0x44 && id(g_master_on)) {
+                id(g_config_push_pending) = true;
+                id(g_detected_slave_id) = f[3];  // np. 0x2A dla id=2
+                ESP_LOGW("c14m", "*** Slave boot detected (f[3]=0x%02X) → config push zaplanowany na nast. cykl #1", f[3]);
+              }
               id(g_cnt_nano)++;
               // Forward do AERO jesli aktywny I master jest OFF (inaczej kolizja)
               if (id(g_forward_on) && !id(g_master_on)) {
@@ -1254,11 +1276,11 @@ button:
             - lambda: |-
                 ESP_LOGW("c14m","!!! Przycisk Boot 80(2A) dziala tylko w roli Slave !!!");
 
-  # Master Config Push E4(29) src=0x2A — symulacja Nano master response do slave id=2 po boot
-  # Wysyła ramkę config push z f[4-13] zaobserwowanymi od Nano mastera.
+  # Master Config Push E4(29) src=0x2X — trigger ręczny (automatycznie wystrzeliwuje po wykryciu 80 od slave)
+  # Ustawia flage g_config_push_pending → w nast. cyklu #1 wyslana E4(29) src=0x2X config push.
   # Działa TYLKO gdy c14_rola = Master.
   - platform: template
-    name: "Master Config Push E4(29) src=0x2A"
+    name: "Master Config Push (force)"
     id: btn_master_config_push
     icon: mdi:cog-refresh
     on_press:
@@ -1267,23 +1289,14 @@ button:
             lambda: 'return id(g_master_on);'
           then:
             - lambda: |-
-                std::vector<uint8_t> f = {
-                  0xE4,0x2A,0x00,0x29,0x0D,0x01,0x05,0x28,0x1C,0x2A,0x00,0x1E,
-                  0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
-                  0x2D,0x4B,0x20,0x01,0x53,0x23 };
-                // Cksum dla src=0x2A (K=0xA3 jak dla E4)
-                uint16_t s = f[0] + f[1];
-                for (int i = 3; i <= 28; i++) s += f[i];
-                f[2] = (s + 0xA3) & 0xFF;
-                id(uart_aero).write_array(f.data(), f.size());
-                id(uart_nano).write_array(f.data(), f.size());
-                char h[120]; int p = 0;
-                for (size_t i = 0; i < f.size() && p < 110; i++)
-                  p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-                ESP_LOGW("c14m", ">>> MASTER_CONFIG_PUSH_E4_2A %s", h);
+                if (id(g_detected_slave_id) == 0) {
+                  id(g_detected_slave_id) = 0x2A;  // default id=2 jesli jeszcze nie wykryto
+                }
+                id(g_config_push_pending) = true;
+                ESP_LOGW("c14m", "*** Config push ZAPLANOWANY recznie (f[3]=0x%02X) ***", id(g_detected_slave_id));
           else:
             - lambda: |-
-                ESP_LOGW("c14m","!!! Przycisk Master Config Push dziala tylko w roli Master !!!");
+                ESP_LOGW("c14m","!!! Master Config Push dziala tylko w roli Master !!!");
 
 sensor:
   - platform: template
