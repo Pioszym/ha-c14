@@ -158,29 +158,6 @@ Pełna sekwencja w kolejności nadawania:
 
 **Ramka specjalna E4(29) src=0x2A** pojawia się **jednorazowo** na pozycji #1 ~16s po power-on Nano slave (detail w sekcji niżej). Zastępuje standardową E4(29) src=0x21 w tym jednym cyklu. W kolejnych cyklach wraca standardowa E4(29) src=0x21.
 
-### ESP Master (esp02.yaml) — zaimplementowane
-
-Kolejność zgodna z Nano Master Mini: E4 pierwsze, QUERY drugie, reszta broadcastów. 10 ramek × 800ms = 8s cykl, interval 8500ms. Opcjonalny tryb Full (switch `c14_master_full`) rozszerza cykl do 27 ramek jak Nano Master Full.
-
-| # | Ramka | Nadawca | Rola |
-|---|-------|---------|------|
-| 1 | E4(29) src=0x21 | **Master (ESP)** | Komenda biegu + zegar + sezon + wietrzenie |
-| 2 | E3(29) src=0x44 | **Master (ESP)** | **QUERY — trigger AERO** |
-| — | E4(63) src=0x21 | **AERO** | Odpowiedź AERO (~400ms po #2) |
-| 3 | E3(29) src=0x56 | **Master (ESP)** | iNEXT slot (rezerwacja) |
-| 4 | E2(29) src=0x44 | **Master (ESP)** | Status broadcast |
-| 5 | E5(29) src=0x21 | **Master (ESP)** | Setpointy temp + bypass + sezon |
-| 6 | F0(29) src=0x44 | **Master (ESP)** | Heartbeat |
-| 7 | 81(29) src=0x44 | **Master (ESP)** | Heartbeat Master |
-| 8-10 | D0/D1/D2(29) src=0x44 | **Master (ESP)** | Slave config |
-| 11-27 | (tylko gdy `c14_master_full=ON`) | **Master (ESP)** | Ramki Master Full (w tym #22 AA wake-up) |
-
-**ESP w roli Slave (select.c14_rola = Slave):**
-- ESP odpowiada **E4(29) src=0x21 f[3]=0x2A** (~400ms) po każdej wykrytej ramce AA(29) src=0x44 od Nano mastera
-- Button `Slave Boot 80(2A)` ręcznie wysyła symulowany `80(29) src=0x44 f[3]=0x2A` (slave boot announcement)
-
-AERO odpowiada E4(63) ~400ms po ramce QUERY. W trybie Full AERO odpowiada 2× per cykl (po #2 i po #14).
-
 ### Timing odpowiedzi AERO (zmierzone przez bridge MITM)
 
 | Czas (względny) | Zdarzenie |
@@ -220,22 +197,30 @@ Nano → AERO. Komenda biegu + zegar + flagi trybów. AERO reaguje mechanicznie 
 E4,21,[cks],29,[DOM],40,00,[DOW],[HH],[MM],7E,00,[TRM_H],[TRM_L],[SP_H],[SP_L],7E×7,14,[X24],[ROT],[LK],[F27],[F28],23
 ```
 
-| Bajty | Znaczenie | Status |
-|-------|-----------|--------|
-| f[4] | **Dzień miesiąca** (1-31) | KNOWN |
-| f[5] | **Flaga trybu:** `0x44`=harmonogram aktywny (Normal/Poza domem), `0x40`=harmonogram WYŁĄCZONY (URLOP) | KNOWN |
-| f[7] | **Dzień tygodnia** (1=Mon..7=Sun) | PARTIAL |
-| f[8] | **Godzina** 0-23 | KNOWN |
-| f[9] | **Minuta** 0-59 | KNOWN |
-| f[10] | 0x7E normalnie, 0x08 przy fan OFF | PARTIAL |
-| f[12-13] | **Temp pokojowa Nano** (sensor wewn CTP) | KNOWN |
-| f[14-15] | **Aktywny setpoint** (śledzi aktualnie wybrany tryb: Comfort/Eco/itp.) | KNOWN |
-| f[23] | 0x14 stałe | UNKNOWN |
-| f[24] | Zmienne (obserwowano 0x32, 0x64, 0x00 w chłodzeniu) | UNKNOWN |
-| f[25] | **Rotator cyklu:** 01 → 02 → 03 → 01 | KNOWN |
-| f[26] | Lookup od f[25]: 01→0x1A, 02→0x04, 03→{0x0E,0x0F,0x13} (wariabilne) | KNOWN |
-| f[27] | **Multi-field encoding** (patrz niżej) | KNOWN |
-| f[28] | **BIEG + overlays** (patrz niżej) | KNOWN |
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[0] | `0xE4` | ID ramki | KNOWN |
+| f[1] | `0x21` | marker typu (komenda master) | KNOWN |
+| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
+| f[3] | `0x29` | subtyp (master id=1) | KNOWN |
+| f[4] | 1-31 | **Dzień miesiąca** | KNOWN |
+| f[5] | `0x40/0x44` | **Flaga trybu:** `0x44`=harmonogram aktywny (Normal/Poza domem), `0x40`=harmonogram WYŁĄCZONY (URLOP) | KNOWN |
+| f[6] | `0x00` | stałe | UNKNOWN |
+| f[7] | 1-7 | **Dzień tygodnia** (1=Mon..7=Sun, encoding do weryfikacji) | PARTIAL |
+| f[8] | 0-23 | **Godzina** | KNOWN |
+| f[9] | 0-59 | **Minuta** | KNOWN |
+| f[10] | `0x7E/0x08` | 0x7E normalnie, 0x08 obserwowane przy fan OFF | PARTIAL |
+| f[11] | `0x00` | stałe | UNKNOWN |
+| f[12-13] | HH,LL | **Temp pokojowa Nano** (sensor wewn CTP) | KNOWN |
+| f[14-15] | HH,LL | **Aktywny setpoint** (śledzi aktualnie wybrany tryb: Comfort/Eco/itp.) | KNOWN |
+| f[16-22] | `0x7E` ×7 | stałe fillery | UNKNOWN |
+| f[23] | `0x14` | stałe | UNKNOWN |
+| f[24] | `0x32/0x64/0x00` | zmienne (0x32 w zwykłym, 0x64 master mini, 0x00 chłodzenie) | UNKNOWN |
+| f[25] | `0x01/0x02/0x03` | **Rotator cyklu:** 01 → 02 → 03 → 01 | KNOWN |
+| f[26] | Lookup od f[25] | 01→`0x1A`, 02→`0x04`, 03→{`0x0E`,`0x0F`,`0x13`} (wariabilne) | KNOWN |
+| f[27] | bitfield | **Multi-field encoding** (tryb temp + sezon + wietrzenie, patrz niżej) | KNOWN |
+| f[28] | bitfield | **BIEG + overlays** (patrz niżej) | KNOWN |
+| f[29] | `0x23` | terminator | KNOWN |
 
 ### E4(29) f[27] — multi-field encoding
 
@@ -307,23 +292,32 @@ Nano oferuje 3 programy użytkownika (TRYB PRACY): 🕐 Normal/Harmonogram, 🏠
 E4,21,[cks],63,09,74,00,3C,00,00,[CZ_H],[CZ_L],[CZ_H],[CZ_L],[NW_H],[NW_L],[WT_H],[WT_L],[WY_H],[WY_L],7E,00,00,00,[N%],[W%],[BG],02,[BP],23
 ```
 
-### Temperatury
-| Bajty | Czujnik |
-|-------|---------|
-| f[10-11] | T1 CZERP (= T.ZEWN) |
-| f[12-13] | Duplikat CZERP (zawsze = f[10-11]) |
-| f[14-15] | T2 NAWIEW |
-| f[16-17] | T4 WYRZUT |
-| f[18-19] | T3 WYWIEW |
+### Pełna tabela bajtów (30B)
 
-### Status
-| Bajt | Znaczenie |
-|------|-----------|
-| f[24] | Nawiew % aktualny |
-| f[25] | Wywiew % aktualny |
-| f[26] | **Bieg: 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrzenie** |
-| f[27] | 0x02 stałe |
-| f[28] | **Bypass bit 5:** `0x40`=zamknięty, `0x60`=otwarty (maska `& 0x20`) |
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[0] | `0xE4` | ID ramki | KNOWN |
+| f[1] | `0x21` | marker (odpowiedź AERO) | KNOWN |
+| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
+| f[3] | `0x63` | subtyp (odpowiedź AERO) | KNOWN |
+| f[4] | `0x09` | stałe (header) | UNKNOWN |
+| f[5] | `0x74` | stałe (header) | UNKNOWN |
+| f[6] | `0x00` | stałe | UNKNOWN |
+| f[7] | `0x3C` | stałe (header) | UNKNOWN |
+| f[8-9] | `0x00,0x00` | stałe | UNKNOWN |
+| f[10-11] | HH,LL | **T1 CZERP** (T.ZEWN) | KNOWN |
+| f[12-13] | HH,LL | Duplikat CZERP (zawsze = f[10-11]) | KNOWN |
+| f[14-15] | HH,LL | **T2 NAWIEW** | KNOWN |
+| f[16-17] | HH,LL | **T4 WYRZUT** | KNOWN |
+| f[18-19] | HH,LL | **T3 WYWIEW** | KNOWN |
+| f[20] | `0x7E` | stałe filler | UNKNOWN |
+| f[21-23] | `0x00,0x00,0x00` | stałe zera | UNKNOWN |
+| f[24] | 0-100 | **Nawiew % aktualny** | KNOWN |
+| f[25] | 0-100 | **Wywiew % aktualny** | KNOWN |
+| f[26] | 0-4 | **Bieg:** 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrzenie | KNOWN |
+| f[27] | `0x02` | stałe (rola?) | UNKNOWN |
+| f[28] | `0x40/0x60` | **Bypass bit 5:** 0x40=zamknięty, 0x60=otwarty (maska `& 0x20`) | KNOWN |
+| f[29] | `0x23` | terminator | KNOWN |
 
 ### % wentylatora per bieg (fabryczne)
 | Bieg | f[24] naw | f[25] wyw |
@@ -414,18 +408,38 @@ Zawiera nastawy % nawiewu/wywiewu per bieg (8 wartości).
 E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,[WIET_WYW],[WIET_NAW],18,14,00,[B1_WYW],[B2_WYW],[B3_WYW],[B1_NAW],[B2_NAW],[B3_NAW],20,01,[BIEG+10h],23
 ```
 
-| Bajty | Znaczenie | Status |
-|-------|-----------|--------|
-| f[14] | Wietrzenie wywiew % (fabr. `0x5F`=95) | KNOWN |
-| f[15] | Wietrzenie nawiew % (fabr. `0x64`=100) | KNOWN |
-| f[20] | B1 wywiew % (fabr. `0x20`=32) | KNOWN |
-| f[21] | B2 wywiew % (fabr. `0x28`=40) | KNOWN |
-| f[22] | B3 wywiew % (fabr. `0x46`=70) | KNOWN |
-| f[23] | B1 nawiew % (fabr. `0x25`=37) | KNOWN |
-| f[24] | B2 nawiew % (fabr. `0x2D`=45) | KNOWN |
-| f[25] | B3 nawiew % (fabr. `0x4B`=75) | KNOWN |
-| f[28] | Znacznik biegu = `E4 f[28] + 0x10` (manual B1 → `0x13`) | KNOWN |
-| f[4-13, 16-19, 26-27] | Stałe, rola nieznana | UNKNOWN |
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[0] | `0xE3` | ID ramki | KNOWN |
+| f[1] | `0x44` | marker typu (query) | KNOWN |
+| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
+| f[3] | `0x29` | subtyp | KNOWN |
+| f[4] | `0x32` | stałe (=50) | UNKNOWN |
+| f[5] | `0x00` | stałe | UNKNOWN |
+| f[6] | `0x05` | stałe | UNKNOWN |
+| f[7] | `0x0A` | stałe (=10) | UNKNOWN |
+| f[8] | `0x28` | stałe (=40) | UNKNOWN |
+| f[9] | `0x1C` | stałe (=28) | UNKNOWN |
+| f[10] | `0x2A` | stałe (=42) | UNKNOWN |
+| f[11] | `0x1E` | stałe (=30) | UNKNOWN |
+| f[12] | `0x01` | stałe | UNKNOWN |
+| f[13] | `0x17` | stałe (=23) | UNKNOWN |
+| f[14] | `0x5F`=95 | **Wietrzenie wywiew %** | KNOWN |
+| f[15] | `0x64`=100 | **Wietrzenie nawiew %** | KNOWN |
+| f[16] | `0x18` | stałe (=24) | UNKNOWN |
+| f[17] | `0x14` | stałe (=20) | UNKNOWN |
+| f[18] | `0x00` | stałe | UNKNOWN |
+| f[19] | `0x24` | stałe (=36) | UNKNOWN |
+| f[20] | `0x20`=32 | **B1 wywiew %** | KNOWN |
+| f[21] | `0x28`=40 | **B2 wywiew %** | KNOWN |
+| f[22] | `0x46`=70 | **B3 wywiew %** | KNOWN |
+| f[23] | `0x25`=37 | **B1 nawiew %** | KNOWN |
+| f[24] | `0x2D`=45 | **B2 nawiew %** | KNOWN |
+| f[25] | `0x4B`=75 | **B3 nawiew %** | KNOWN |
+| f[26] | `0x20` | stałe | UNKNOWN |
+| f[27] | `0x01` | stałe | UNKNOWN |
+| f[28] | `0x11-0x17` | **Znacznik biegu** = `E4 f[28] + 0x10` (manual B1 → `0x13`, Stop → `0x11`) | KNOWN |
+| f[29] | `0x23` | terminator | KNOWN |
 
 ---
 
