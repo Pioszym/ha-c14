@@ -1213,6 +1213,31 @@ number:
     set_action:
       - lambda: 'id(g_sp_poza) = x;'
 
+button:
+  # Symulacja slave boot announcement 80(2A) src=0x44
+  # Wysyła ramkę typu Nano slave wysyła jednorazowo po power-on.
+  # Działa TYLKO gdy c14_rola = Slave (inaczej kolizja z master TX).
+  - platform: template
+    name: "Slave Boot 80(2A)"
+    id: btn_slave_boot
+    icon: mdi:restart-alert
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(g_slave_on);'
+          then:
+            - lambda: |-
+                std::vector<uint8_t> f = {
+                  0x80,0x44,0x5F,0x2A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                  0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                  0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+                id(uart_aero).write_array(f.data(), f.size());
+                id(uart_nano).write_array(f.data(), f.size());
+                ESP_LOGW("c14m", ">>> BOOT_80_2A_SLAVE 80,44,5F,2A,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,7E,23");
+          else:
+            - lambda: |-
+                ESP_LOGW("c14m","!!! Przycisk Boot 80(2A) dziala tylko w roli Slave !!!");
+
 sensor:
   - platform: template
     name: "T.Czerpnia"
