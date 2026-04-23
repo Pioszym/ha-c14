@@ -150,7 +150,7 @@ Pełna sekwencja w kolejności nadawania:
 
 | Kiedy | Ramka | Nadawca | Rola |
 |-------|-------|---------|------|
-| Po power-on slave (1× jednorazowo, ~3-5s po starcie) | 80(29) src=0x44 f[3]=0x2A | **Slave** | Slave boot announcement (`80,44,5F,2A,7E×26,23`) |
+| Po power-on slave (1× jednorazowo, ~3-5s po starcie, pozycja w cyklu niepewna) | 80(29) src=0x44 f[3]=0x2A | **Slave** | Slave boot announcement (`80,44,5F,2A,7E×26,23`) |
 | ~16s po boot slave (1× w najbliższym cyklu master) | E4(29) src=0x2A | **Master** | Config push do slave id=2 — zastępuje pozycję #1 cyklu |
 | Co cykl po wykryciu AA(29)_44 (#22) | E4(29) src=0x21 f[3]=0x2A | **Slave** | Odpowiedź slave (~400ms po #22) — obecna gdy slave id=2 aktywny |
 
@@ -479,12 +479,20 @@ Gdy Nano w trybie slave (id ≠ 1) startuje (power-on), nadaje **jeden raz** ram
 - f[2] = 0x5F (taka sama cksum jak 81(29) — sugeruje wspólną rodzinę heartbeat)
 - payload = 0x7E fill (puste, tylko sygnalizacja)
 
-**Obserwacja 2026-04-22:** po power-cycle Nano slave wysłał 80(2A) **jednorazowo** ~3-5s po starcie (timing zgodny z pierwszym E5(29) od ESP master). Po tej ramce Nano zmienił encoding E4(2A):
+**Obserwacja 2026-04-22:** po power-cycle Nano slave wysłał 80(2A) **jednorazowo** ~3-5s po starcie. Po tej ramce Nano zmienił encoding E4(2A):
 - f[28] z `0x43` (stare B1) → `0x03` (nowe B1, zgodnie z naszym ESP master)
 - f[23-24] z `14,64` → `14,32` (coś typu limit % fan)
 - Rotator f[25-26] zresetowany do `00,00`
 
-**Hipoteza:** 80(2A) to "slave ready announcement" — Nano informuje że jest po boot i gotowy do synchronizacji. Komunikat Nano slave UI "DATĘ I CZAS USTAWIA NANO NR 1" sugeruje że po tym może być oczekiwana odpowiedź od mastera z sync (którą my nie wysyłamy — być może dedykowana ramka typu `81(2A)` czy inna).
+**Timing w cyklu master (niepewne — tylko 1 obserwacja):**
+80(2A) pojawiło się 780ms po #5 (E5(29)) a 38ms przed #6 (F0(29)) w cyklu ESP master. Trzy możliwe interpretacje:
+- (a) **Losowe** — Nano slave wysyła od razu po własnej inicjalizacji, niezależnie od pozycji cyklu master
+- (b) **Bus arbitration** — Nano slave czeka na ciszę między ramkami mastera i wstawia 80(2A) w pierwszą wolną lukę
+- (c) **Specyficzny slot** — 80(2A) jest dedykowane dla pozycji między #5 a #6
+
+Do rozstrzygnięcia potrzebne więcej obserwacji power-cycle'i slave (różne timing startu master).
+
+**Hipoteza:** 80(2A) to "slave ready announcement" — Nano informuje że jest po boot. Komunikat Nano slave UI "DATĘ I CZAS USTAWIA NANO NR 1" sugeruje że po tym może być oczekiwana odpowiedź od mastera z sync — **weryfikowane 2026-04-23**: master wysyła wtedy ramkę `E4(29) src=0x2A` (config push) ale bez daty.
 
 ---
 
