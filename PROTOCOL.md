@@ -109,30 +109,43 @@ Nano sekwencja: komenda biegu najpierw, trigger QUERY zaraz po, potem reszta bro
 
 Master Full to rozszerzona wersja Mini, aktywowana w menu serwisowym Nano (TRYB W SIECI C14 = MASTER). Dodaje 17 ramek enumeration/keepalive dla rzadkich slave ID. **E3(29)_44 występuje DWA razy w cyklu** — AERO odpowiada E4(63) dwukrotnie per cykl (~10s + ~13s split).
 
-Pełna sekwencja (po #1-10 identyczne jak Mini):
+Pełna sekwencja w kolejności nadawania:
 
-| # | Ramka | Rola |
-|---|-------|------|
-| 1-10 | (jak Master Mini) | |
-| 11 | D3(29) src=0x44 | Slave config 4 |
-| 12 | D4(29) src=0x44 | Slave config 5 |
-| 13 | D5(29) src=0x44 | Slave config 6 |
-| 14 | E3(29) src=0x44 | **Drugi QUERY** — identyczny jak #2 |
-| 15 | 8B(29) src=0x44 | Heartbeat slave ID 0x8B (0x7E fill) |
-| 16 | 9F(29) src=0x44 | Heartbeat 0x9F |
-| 17 | 82(29) src=0x44 | Heartbeat 0x82 |
-| 18 | 8C(29) src=0x44 | Heartbeat 0x8C |
-| 19 | 8D(29) src=0x44 | Heartbeat 0x8D |
-| 20 | 8E(29) src=0x44 | Heartbeat 0x8E |
-| 21 | 95(29) src=0x44 | Heartbeat 0x95 |
-| 22 | AA(29) src=0x44 | Broadcast 0xAA master-side (0x7E fill) |
-| 23 | AA(29) src=0x56 | Broadcast 0xAA iNEXT-side (0x00 fill) |
-| 24 | AB(29) src=0x44 | Broadcast 0xAB master-side |
-| 25 | AB(29) src=0x56 | Broadcast 0xAB iNEXT-side |
-| 26 | AC(29) src=0x44 | Broadcast 0xAC master-side |
-| 27 | AC(29) src=0x56 | Broadcast 0xAC iNEXT-side |
+| # | Ramka | Nadawca | Rola |
+|---|-------|---------|------|
+| 1 | E4(29) src=0x21 | Nano | **Komenda biegu + zegar** (lub jednorazowo E4(29) src=0x2A config push po boot slave) |
+| 2 | E3(29) src=0x44 | Nano | **QUERY #1 — trigger AERO** |
+| (AERO) | E4(63) src=0x21 | **AERO** | Odpowiedź (~400ms po #2) |
+| 3 | E3(29) src=0x56 | Nano | iNEXT slot (zera) |
+| 4 | E2(29) src=0x44 | Nano | Status broadcast (stałe) |
+| 5 | E5(29) src=0x21 | Nano | Setpointy temperatur + bypass + sezon |
+| 6 | F0(29) src=0x44 | Nano | Heartbeat (0x7E fill) |
+| 7 | 81(29) src=0x44 | Nano | Heartbeat Nano master |
+| 8 | D0(29) src=0x44 | Nano | Slave config 1 |
+| 9 | D1(29) src=0x44 | Nano | Slave config 2 |
+| 10 | D2(29) src=0x44 | Nano | Slave config 3 |
+| 11 | D3(29) src=0x44 | Nano | Slave config 4 |
+| 12 | D4(29) src=0x44 | Nano | Slave config 5 |
+| 13 | D5(29) src=0x44 | Nano | Slave config 6 |
+| 14 | E3(29) src=0x44 | Nano | **QUERY #2 — drugi trigger** (identyczne jak #2) |
+| (AERO) | E4(63) src=0x21 | **AERO** | Druga odpowiedź AERO |
+| 15 | 8B(29) src=0x44 | Nano | Heartbeat slave ID 0x8B (0x7E fill) |
+| 16 | 9F(29) src=0x44 | Nano | Heartbeat 0x9F |
+| 17 | 82(29) src=0x44 | Nano | Heartbeat 0x82 |
+| 18 | 8C(29) src=0x44 | Nano | Heartbeat 0x8C |
+| 19 | 8D(29) src=0x44 | Nano | Heartbeat 0x8D |
+| 20 | 8E(29) src=0x44 | Nano | Heartbeat 0x8E |
+| 21 | 95(29) src=0x44 | Nano | Heartbeat 0x95 |
+| 22 | AA(29) src=0x44 | Nano | Broadcast 0xAA master-side (0x7E fill) |
+| 23 | AA(29) src=0x56 | Nano | Broadcast 0xAA iNEXT-side (0x00 fill) |
+| 24 | AB(29) src=0x44 | Nano | Broadcast 0xAB master-side |
+| 25 | AB(29) src=0x56 | Nano | Broadcast 0xAB iNEXT-side |
+| 26 | AC(29) src=0x44 | Nano | Broadcast 0xAC master-side |
+| 27 | AC(29) src=0x56 | Nano | Broadcast 0xAC iNEXT-side |
 
-**Wszystkie 17 dodatkowych ramek mają zawartość statyczną** (0x7E lub 0x00 fill) — enumeration/keepalive, bez użytecznych danych. Jednak Master Full jest **wymagany** żeby Nano w trybie slave zaczął aktywnie komunikować się na magistrali (w Mini Nano slave jest całkowicie cichy).
+**17 ramek dodatkowych (#11-13, #14, #15-21, #22-27) ma zawartość statyczną** (0x7E lub 0x00 fill) — enumeration/keepalive. Mimo to Master Full jest **wymagany** żeby Nano w trybie slave zaczął aktywnie komunikować się na magistrali (w Mini Nano slave jest całkowicie cichy). Konkretnie **AA(29) src=0x44 (#22)** jest wake-up'em dla Nano slave.
+
+**Ramka specjalna E4(29) src=0x2A** pojawia się **jednorazowo** na pozycji #1 ~16s po power-on Nano slave (detail w sekcji niżej). Zastępuje standardową E4(29) src=0x21 w tym jednym cyklu. W kolejnych cyklach wraca standardowa E4(29) src=0x21.
 
 ### ESP Master (esp02.yaml) — zaimplementowane
 
@@ -414,23 +427,26 @@ Same zera, `f[4-28]=0x00`. Rezerwacja miejsca dla iNEXT display.
 
 ### Ramka E4(29) src=0x2A — master config push do slave id=2
 
-Obserwacja 2026-04-23: ~16s po power-on Nano slave id=2, Nano master jednorazowo wysłał:
+Obserwacja 2026-04-23: ~16s po power-on Nano slave id=2, Nano master **jednorazowo** wysyła ramkę typu E4(29) z `src=0x2A` zamiast zwykłego `src=0x21` — na pozycji #1 cyklu Master Full.
 
 ```
-E4,2A,43,29,[DATA],5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,53,23
+E4,2A,[cks],29,0D,01,05,28,1C,2A,00,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,[BIEG],23
 ```
 
 Charakterystyczne:
-- **f[1] = 0x2A** — adresowanie do konkretnego slave id=2 (normalnie broadcasty mają f[1]=0x21 lub 0x44)
-- f[3] = 0x29 (master subtype)
-- Od f[14] do f[29] — identyczne jak w E3(29)_44 query (% per bieg, rotator, f[28] bieg marker)
-- f[4-13] = `0D,01,05,28,1C,2A,00,1E,01,17` — nieznane, hipoteza: data/godzina lub setpointy systemowe
+- **f[1] = 0x2A** — adresowanie do konkretnego slave id=2 (normalnie ramki mastera mają `f[1]=0x21`)
+- f[3] = 0x29 (master-side subtype)
+- Od f[14] do f[27] — identyczne jak w E3(29)_44 query (% per bieg, rotator)
+- f[28] — kod biegu slave (`0x53` gdy harmonogram B1, `0x13` gdy manual B1)
+- f[4-13] = `0D,01,05,28,1C,2A,00,1E,01,17` — **stałe** między power cycles, NIE zawiera daty
 
-**Rola:** master "pushuje" konfigurację do slave'a po jego boot. Po tej ramce Nano slave przechodzi na nowy encoding (z stare `0x43` → nowe `0x03` w f[28] E4(2A)) — wcześniej to obserwowaliśmy jako "slave zmienił tryb po 80(2A)".
+**Rola:** master pushuje konfigurację do slave'a (ID-specific broadcast). Slave po tym wydarzeniu aktualizuje encoding w swoich E4(2A):
+- f[28] zmienia się z `0x43` (stare B1) na `0x03` (nowe B1, zgodne z trybem master)
+- Rotator zresetowany
 
-**Timing:** ~16s po power-on slave. Prawdopodobnie master czeka aż slave się ustabilizuje przed config push.
+**Timing:** ~16s po power-on Nano slave (dokładnie co 15.5-16s z 2 obserwacji).
 
-**Pole konfiguracyjne f[4-13] wymaga dedykowanego testu** — zmiana daty na Nano master + wymuszenie re-boot slave, porównanie zawartości.
+**Data NIE jest w tej ramce** — weryfikowane testem kontrolnym 2026-04-23 (zmiana daty na Nano master przed power cycle slave, porównanie dwóch kolejnych E4(29) src=0x2A: bajty f[4-13] bez zmian mimo różnej daty masters). Data/godzina nie jest w ogóle transmitowana przez C14 — zarówno master jak i slave trzymają własny RTC.
 
 ---
 
