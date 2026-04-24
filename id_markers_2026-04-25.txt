@@ -46,3 +46,10 @@ Nano ON 00:29:15
 Nano master POWER OFF #3 00:34:23 (po flash VS TX nano-only)
 Nano ON #3 00:34:56
 POTWIERDZONE: VS zaklocaja AERO (bus multi-drop, ESP nie rozdziela elektrycznie)
+=== TEST: VS+Nano start sequence 00:41:30 ===
+Plan: 1) all VS off 2) Nano off/on -> aero? 3) 1 VS on 4) Nano off/on -> aero?
+Nano OFF (all VS off) 00:42:04
+Nano ON (all VS off test) 00:42:29
+ROZWIAZANIE: masa RS-485 sie poluzowala (sprzetowe)
+Wczesniejsze problemy AERO zaszywane za VS - faktycznie bylo poluzowane polaczenie!
+=== TEST FINAL: all VS on, po naprawie masy 00:51:20 ===

@@ -604,7 +604,7 @@ Nano slave wysyła w E4(2A) `f[28] = 0x43` (stare encoding B1) niezależnie od a
 12. ~~**Co przełącza f[24]/f[28] w E4(29) master na synced (0x64/0x43)?**~~ **ROZSTRZYGNIĘTE 2026-04-25:** NIE komunikacja z slave'ami (VS wysyłające synced nie przywracają mastera). NIE komunikacja z AERO (master z AERO OK i f[5]=0x40 nadal ma f[24]=0x32). **f[24]/f[28] to stan menu Nano** (tryb mocy fan, harmonogram, sezon) zapisany w EEPROM — wymaga zmiany w menu UI mastera.
 13. **Odkryte 2026-04-25: f[5] w E4(29) src=21 = flaga AERO_OK** (0x40=AERO odpowiada, 0x00=brak odp). Reaguje live (obserwowane przełączenie w trakcie testu).
 14. **Jak Nano master dodaje slave do listy wake-up'ów?** 80 boot NIE wystarcza (empirycznie potwierdzone). Prawdopodobnie rejestracja przez menu UI mastera.
-15. **Topologia bus = single multi-drop**, ESP MITM tylko logiczny. TX z ESP (dowolnego UART) fizycznie dociera do wszystkich urządzeń. Efekt: VS odpowiedzi zakłócały AERO (bus interference), mimo że TX szedł tylko na uart_nano.
+15. ~~Topologia bus = single multi-drop, TX z ESP fizycznie dociera do AERO → VS zakłócają AERO.~~ **ERRATUM 2026-04-25:** hipoteza błędna, rzeczywistą przyczyną "zakłócania" była luźna masa RS-485. Po naprawie masy VS + AERO współistnieją bez problemu przy wszystkich 4 VS aktywnych + trigger E3(29)_44 do AERO.
 
 ---
 

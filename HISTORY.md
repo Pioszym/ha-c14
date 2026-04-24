@@ -113,13 +113,16 @@ Prawdopodobnie stan menu Nano (sezon/harmonogram/tryb mocy) zapisany w EEPROM.
 
 **D0-D5 payload identyczny** u Nano master (i naszego ESP master): `53,4B,41,07,68,07,04,00,6E,00,5A` — 6× broadcast config (nie per-slave).
 
-### Kluczowe ograniczenie topologii
+### Topologia bus (erratum 2026-04-25)
 
-**Bus C14 jest single multi-drop** — ESP nie rozdziela elektrycznie kabli Nano i AERO, tylko podsłuchuje i forwarduje logicznie. Konsekwencja: **TX z naszych VS (nawet tylko na uart_nano) fizycznie dociera do AERO** i może zakłócać jego pracę.
+**Początkowa błędna hipoteza:** "VS zakłóca AERO przez multi-drop bus" — odwołana po znalezieniu luźnej masy RS-485.
 
-**Empiryczne potwierdzenie:** gdy VS2+VS3+VS4 odpowiadały w cyklu Nano mastera, AERO przestawało odpowiadać (licznik zamrożony). Po wyłączeniu wszystkich VS — AERO wracało w ciągu minuty. Sekwencja powtórzona 3 razy z tym samym wynikiem.
+**Rzeczywistość potwierdzona po naprawie:** z dobrym bus'em **VS2/3/4 + AERO współistnieją bez konfliktu**:
+- AERO Responses rośnie stabilnie (co ~10s, zgodnie z cyklem Nano mastera)
+- Wszystkie cztery VS aktywne, każdy odpowiada na swój wake-up
+- Brak utraty ramek, brak zamrożenia AERO
 
-**Workaround (do rozważenia):** przeciąć fizycznie bus na parze ESP, żeby TX Nano→ESP_RX_nano + ESP_TX_aero→AERO był prawdziwym MITM. Ale wtedy nasz ESP byłby SPOF.
+**Morał:** przy diagnostyce bus RS-485 najpierw sprawdź fizykę (masy, zasilanie, terminacja), potem software. Nasze całe "VS zakłóca AERO" w poprzedniej sesji było efektem luźnego połączenia GND.
 
 ### Status szablonu VS
 
