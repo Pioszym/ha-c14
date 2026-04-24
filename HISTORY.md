@@ -82,6 +82,57 @@ Test: Nano w trybie slave, manualna zmiana id w menu Nano, zapis reakcji magistr
 
 **TODO po sesji:** nie zaimplementowane jeszcze — yaml zmiana + compile + flash po następnym kontakcie.
 
+## Virtual Slaves + Nano master (2026-04-24/25)
+
+Test z Nano w roli master, ESP jako 4 niezależne virtual slave'y (switche VS id=2..5). Log: `vs_test.log`.
+
+### Potwierdzone (H1 — wake-up sztywne)
+
+- **Wake-up per-id zweryfikowane empirycznie dla id=2,3,4:** Nano master nadaje `AA,44,08,29` (id=2) / `AB,44,09,29` (id=3) / `AC,44,0A,29` (id=4) × src=44 i src=56 (6 wake-up'ów/cykl).
+- **VS2 + VS3 + VS4 aktywne jednocześnie** odpowiadają bez kolizji — każdy słyszy wyłącznie swój wake-up.
+- **VS5 (id=5) ignorowany przez Nano mastera** — 80(2D) boot leci ale master nie dodaje AD wake-up. Mistrz ma **statyczną listę zarejestrowanych slave'ów** z menu, nie dynamiczną rejestrację po 80.
+- Hipoteza H2 (wake-up rotuje AA=pierwszy/AB=drugi) — **ODRZUCONA**. Potwierdzone przy jednym aktywnym id=5 — Nano master NIE nadał AA.
+
+### Odkrycia w ramkach Nano master
+
+**f[5] w E4(29) src=21 = flaga AERO_OK:**
+- 0x40 = master widzi odpowiedzi AERO (live sync)
+- 0x00 = brak komunikacji z AERO (master krzyczy "brak komunikacji")
+- Reaguje dynamicznie (obserwowane przełączenie 0x40↔0x00 w trakcie testu)
+
+**f[24] i f[28] w E4(29) src=21 — NIE reagują na live bus** (hipoteza sync master↔slave ODRZUCONA):
+- f[24]=0x32 (prawdop. tryb fan awaryjny 50%) trwałe w pamięci
+- f[28]=0x03 (brak flagi 0x40) trwałe
+- Nie zmieniają się mimo AERO OK, mimo VS synced, mimo power cycle
+
+Prawdopodobnie stan menu Nano (sezon/harmonogram/tryb mocy) zapisany w EEPROM.
+
+**E3(29) src=44 ma 2 warianty** różniące się tylko f[28]: 0x13 vs 0x53 (flaga 0x40 toggle — może "cycle phase").
+
+**f[24] w E3(29) src=44 = 0x2D** (id=5) — prawdopodobnie max slave id lub "highest registered slave" z menu Nano. Nie zmienia się po 80 boot od innych id.
+
+**D0-D5 payload identyczny** u Nano master (i naszego ESP master): `53,4B,41,07,68,07,04,00,6E,00,5A` — 6× broadcast config (nie per-slave).
+
+### Kluczowe ograniczenie topologii
+
+**Bus C14 jest single multi-drop** — ESP nie rozdziela elektrycznie kabli Nano i AERO, tylko podsłuchuje i forwarduje logicznie. Konsekwencja: **TX z naszych VS (nawet tylko na uart_nano) fizycznie dociera do AERO** i może zakłócać jego pracę.
+
+**Empiryczne potwierdzenie:** gdy VS2+VS3+VS4 odpowiadały w cyklu Nano mastera, AERO przestawało odpowiadać (licznik zamrożony). Po wyłączeniu wszystkich VS — AERO wracało w ciągu minuty. Sekwencja powtórzona 3 razy z tym samym wynikiem.
+
+**Workaround (do rozważenia):** przeciąć fizycznie bus na parze ESP, żeby TX Nano→ESP_RX_nano + ESP_TX_aero→AERO był prawdziwym MITM. Ale wtedy nasz ESP byłby SPOF.
+
+### Status szablonu VS
+
+Szablon VS nadaje: f[7]=0x02, f[24]=0x64, f[28]=0x43 (skopiowane z synced Nano slave). Drobne potencjalne ulepszenia (niepilne):
+- Rotator f[25-26] stały `01,14` (realny Nano rotuje `01,1A / 02,01 / 03,02` cyklicznie)
+- Zegar f[8-9] działa OK (SNTP)
+
+### Nierozstrzygnięte pytania
+
+1. **Jak Nano master dodaje nowy slave id do listy wake-up'ów?** 80 boot nie wystarcza. Może menu UI + potwierdzenie w innym urządzeniu?
+2. **Jakie konkretnie ustawienia menu Nano mastera ustawiają f[24]/f[28] w E4(29)** na 0x64/0x43 vs 0x32/0x03?
+3. **Czy fizyczne rozdzielenie bus'u przez ESP MITM** pozwoli uniknąć zakłócania AERO przez VS?
+
 ## ESP8266 SW serial — fantomowe `0xFF`
 
 **Objaw:** Pierwotny sniffer na `wemos04` (ESP8266, software serial GPIO12/13) pokazywał ramki **31 bajtów** kończące się sekwencją `0x23,0xFF`. Skill i stara dokumentacja zapisywały to jako "terminator 0x23+0xFF".

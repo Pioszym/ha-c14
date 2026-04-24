@@ -601,6 +601,10 @@ Nano slave wysyła w E4(2A) `f[28] = 0x43` (stare encoding B1) niezależnie od a
 9. **Co dokładnie przełącza slave w stan "synced" (f[28] bit 0x40)?** Nasz ESP master wysyła wake-up + config push E4(29) src=0x2X, ale slave dalej w trybie unsynced (f[28]=0x03, f[24]=0x32). Brakuje prawdopodobnie specyficznej sekwencji handshake (może per-id D0/D1 albo ramki typu E4(29) src=0x2X z konkretnym polem "accept"?).
 10. **Rola src=0x56 wake-up'ów (AA/AB/AC,56)** — inny kanał niż src=0x44, inny CRC (K=0x23), payload 0x00. Hipoteza: osobny bus dla EX4/iNEXT/rozszerzeń.
 11. **f[7] w E4 od slave** (obecnie 0x03, wcześniej 0x02) — stałe w całej sesji niezależnie od id, zmienia się między sesjami gdy zmienimy coś w konfigu. Może model firmware, może "liczba urządzeń przekazana przez master w config", może tryb pracy Nano (regulator/termostat/kanałowy).
+12. ~~**Co przełącza f[24]/f[28] w E4(29) master na synced (0x64/0x43)?**~~ **ROZSTRZYGNIĘTE 2026-04-25:** NIE komunikacja z slave'ami (VS wysyłające synced nie przywracają mastera). NIE komunikacja z AERO (master z AERO OK i f[5]=0x40 nadal ma f[24]=0x32). **f[24]/f[28] to stan menu Nano** (tryb mocy fan, harmonogram, sezon) zapisany w EEPROM — wymaga zmiany w menu UI mastera.
+13. **Odkryte 2026-04-25: f[5] w E4(29) src=21 = flaga AERO_OK** (0x40=AERO odpowiada, 0x00=brak odp). Reaguje live (obserwowane przełączenie w trakcie testu).
+14. **Jak Nano master dodaje slave do listy wake-up'ów?** 80 boot NIE wystarcza (empirycznie potwierdzone). Prawdopodobnie rejestracja przez menu UI mastera.
+15. **Topologia bus = single multi-drop**, ESP MITM tylko logiczny. TX z ESP (dowolnego UART) fizycznie dociera do wszystkich urządzeń. Efekt: VS odpowiedzi zakłócały AERO (bus interference), mimo że TX szedł tylko na uart_nano.
 
 ---
 
