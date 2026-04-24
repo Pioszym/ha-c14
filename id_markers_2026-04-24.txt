@@ -1,0 +1,39 @@
+id=4 : 22:18:31 (było już ustawione przed problemem z addon restart)
+id=5 : 22:18:31
+id=5 : BRAK ODPOWIEDZI - Nano przestal nadawac (nasz master nie ma wake-up AD)
+id=4 : 22:20:07 (powrot z id=5 bo slave nie nadawal)
+id=5 : 22:20:35 (2ga proba - sprawdzenie powtarzalnosci)
+id=5 : 22:20:57 - BRAK NANO potwierdzone (2ga proba)
+id=6 : 22:21:02
+id=6 : BRAK (zgodnie z hipoteza) + power off 22:21:39
+power ON : 22:22:04 (prawdop. id=6 jeszcze)
+power ON : jest 80 boot announcement 22:22:25
+id=6 : 22:23:03 Nano wyslalo tylko 80 boot, brak E4 cyclic (brak wake-up AE od mastera)
+id=5 : 22:23:21 (3cia proba, spodziewany brak cyclic)
+id=5 : cisza potwierdzone + power off 22:24:04
+power ON : 22:24:34 (oczekuje 80(2D) dla id=5)
+id=5 boot: 80(2D) potwierdzone 22:24:46
+ESP master reboot : 22:26:19
+ESP master back 22:27:00 (AERO Responses=0 - AERO nadal nie odpowiada)
+id=4 : 22:27:00 (user probuje powrot by sprawdzic)
+id=4 : 22:27:28 - nano OK, aero OK (system wrocil po reboocie ESP)
+UWAGA: user twierdzi ze powrot na id=4 naprawil AERO (nie sam restart ESP)
+hipoteza: AERO milknie gdy slave id nieobslugiwany przez mastera (id=5,6)?
+id=5 : 22:28:24 (4ta proba - TEST HIPOTEZY czy AERO zamilknie)
+id=5 (4ta proba): AERO OK, Nano cisza - hipoteza AERO<->slave_id ODRZUCONA
+id=6 : 22:29:19
+id=6 power off 22:29:43
+power ON : 22:30:19
+id=? 22:31:33 - BRAK AERO i BRAK NANO - master dziala zle
+---log sprawdzony: AERO jest (22:31:29), Nano brak 80 jeszcze---
+id=2 : 22:31:56 - POWROT - koniec sweepa, zaczynam analize
+id=2 (powrot): 22:34:12 - NIE MA NANO! (wczesniej dzialalo przy id=2)
+id=3: nano JEST
+id=4: 22:34:13
+HIPOTEZA USERA: Nano pamieta 'ilosc zarejestrowanych urzadzen' (EEPROM) - po config push z id=5,6 pamieta 'jest ich >2'
+id=4: nano JEST, aero JEST 22:34:23
+id=5: 22:34:23
+id=5: brak nano potwierdzone (4ta proba hipoteza)
+=== SWEEP ZAKONCZONY - analiza + rozszerzenie mastera o wake-up AD..BC (id 5-20) ===
+id=2 (2ga proba powrotu): 22:36:05 - OBA SA (dziala!) -> ponowna proba wkroczyla w cykl
+KONIEC TESTU 22:36:05

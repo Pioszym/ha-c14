@@ -527,22 +527,55 @@ Gdy Nano w trybie slave (id ≠ 1) startuje (power-on), nadaje **jeden raz** ram
 
 ---
 
-### Nano jako slave (id ≠ 1)
+### Nano jako slave (id ≠ 1) — PER-ID WAKE-UP ☆
 
-Gdy Nano jest w trybie slave (`f[3] = 0x28 + id`, id 2-20), obserwowane zachowania:
+**Odkryte 2026-04-24 (sweep id=2..6):** każde id slave'a ma **dedykowaną ramkę wake-up** w cyklu Master Full. Slave nasłuchuje WYŁĄCZNIE swojego wake-up'a i IGNORUJE wake-up'y innych slave'ów. To rozwiązuje problem kolizji — wiele slave'ów na jednej magistrali nie musi się między sobą synchronizować.
 
-- **Master Mini master obecny na busie** → Nano slave **cichy** (zero TX).
-- **Master Mini + AA(29) src=0x44** → Nano slave aktywuje się i nadaje E4(2A).
-- **Master Full master obecny** → Nano slave aktywny (zawiera AA).
-- **Brak mastera** → Nano slave cichy.
+**Wzór:** `wake-up f[0] = 0xA8 + id`, f[1]=0x44, f[2]=0x06+id, f[3]=0x29, payload=0x7E×26.
 
-**Trigger Nano slave = ramka AA(29) src=0x44:**
-```
-AA,44,08,29,7E×26,23
-```
-(pusta zawartość, sama obecność na magistrali działa jak wake-up — analogicznie do E3(29)_44 dla AERO).
+| id | Wake-up ramka | Slave f[3] | Status (nasz master) |
+|----|---------------|-----------|----------------------|
+| 2  | `AA,44,08,29,...` (#22) | 0x2A | ✓ obecne w cyklu |
+| 3  | `AB,44,09,29,...` (#24) | 0x2B | ✓ obecne w cyklu |
+| 4  | `AC,44,0A,29,...` (#26) | 0x2C | ✓ obecne w cyklu |
+| 5  | `AD,44,0B,29,...`       | 0x2D | ✗ TODO (generować) |
+| 6  | `AE,44,0C,29,...`       | 0x2E | ✗ TODO |
+| ... | ... | ... | ... |
+| 20 | `BC,44,1A,29,...`       | 0x3C | ✗ TODO |
 
-Pozostałe 16 ramek Master Full (D3-D5, 8B-9F, AB, AC) **nie są wymagane** do aktywacji Nano slave — to prawdopodobnie enumeration dla innych typów urządzeń (EX4, iNEXT expansion, dodatkowe Nano) niewystępujących w tym setupie.
+**Dowody empiryczne (2026-04-24 22:17-23:18):**
+- Nano z id=3 odpowiadało ~280ms po #24_AB,44 — IGNOROWAŁO #22_AA,44 i #26_AC,44
+- Nano z id=4 odpowiadało ~280ms po #26_AC,44 — IGNOROWAŁO AA i AB
+- Nano z id=5 lub id=6 **milczało cyklicznie** (brak wake-up AD/AE w naszym masterze), mimo że wysyłało 80 boot po power-on
+- Po dodaniu wake-up AD,44,0B,29 master będzie mógł obsłużyć slave id=5 i wyżej
+
+**Druga forma wake-up src=0x56** (ramki #23/#25/#27): `AA/AB/AC,56,4C/4D/4E,29,0x00×26`
+- Inny payload (0x00 zamiast 0x7E), inny CRC (K=0x23 zamiast K=0x93)
+- Rola niejasna — być może kanał dla rozszerzeń iNEXT/EX4 (inne typy urządzeń)
+
+**Wzór CRC wake-up:**
+- src=0x44: `f[2] = (f[0]+f[1]+f[3]+25×0x7E + 0x93) & 0xFF = 0x06+id`
+- src=0x56: `f[2] = (f[0]+f[1]+f[3]+25×0x00 + 0x23) & 0xFF = 0x4A+id`
+
+### Ramka 80(29) src=0x44 — boot announcement (uzupełnienie)
+
+**Potwierdzone dla wielu id (2026-04-24):**
+- Nano slave po power-on wysyła `80(2X)` dla dowolnego id 2-20, gdzie f[3]=0x28+id
+- CRC: `f[2] = 0x5F + (id-2)` (0x5F dla id=2, 0x62 dla id=5, 0x63 dla id=6)
+- Nawet jeśli master nie ma wake-up'a dla tego id — 80 boot leci **bezwarunkowo**
+- ESP master wykrywa 80(2X) i wysyła config push `E4(29) src=0x2X` w nast. cyklu #1 — ale to **nie wystarcza** do pełnego "sparowania" slave'a (f[28] pozostaje 0x03 bez flagi sync 0x40)
+
+### Stan slave: synced vs unsynced
+
+**Flaga sync (bit 0x40 w f[28] ramki E4(2X) od slave):**
+
+| Pole | Slave "synced" z oryginalnym Nano master | Slave z naszym ESP master |
+|------|------------------------------------------|---------------------------|
+| f[7]  | 0x02 | **0x03** |
+| f[24] | 0x64 (100%) | **0x32 (50%)** |
+| f[28] | 0x43 (sync\|B1) | **0x03 (B1 bez sync)** |
+
+Obserwacja: ESP master wysyłający config push E4(29) src=0x2X i wake-up nie wystarcza by przełączyć Nano slave w stan "synced" (flaga 0x40 w f[28]). Brakuje jakiegoś dodatkowego elementu w dialogu (prawdopodobnie konkretny format D0/D1 specyficzny dla id, lub handshake po 80 boot).
 
 ### Nano slave — czas i RTC
 
@@ -564,7 +597,10 @@ Nano slave wysyła w E4(2A) `f[28] = 0x43` (stare encoding B1) niezależnie od a
 5. **E5(29) f[28]** — pełny enum kodów UI (obserwowane niejednolite wartości).
 6. **Format E2, D0-D2** — wartości w polach "stałych" mogą się zmieniać przy edge case'ach.
 7. **Cold-start Nano** — czy istnieje sekwencja handshake? ESP-master jej nie robi i działa, ale być może AERO startuje w trybie "trusted".
-8. **Która konkretna ramka w Master Full triggeruje Nano slave?** Test połówkowy (wyłącz grupę A/D/8x i obserwuj) rozstrzygnie.
+8. ~~Która konkretna ramka w Master Full triggeruje Nano slave?~~ **ROZSTRZYGNIĘTE 2026-04-24:** per-id wake-up `0xA8+id, 0x44, 0x06+id, 0x29, ...`. Każde id słucha wyłącznie swojej ramki.
+9. **Co dokładnie przełącza slave w stan "synced" (f[28] bit 0x40)?** Nasz ESP master wysyła wake-up + config push E4(29) src=0x2X, ale slave dalej w trybie unsynced (f[28]=0x03, f[24]=0x32). Brakuje prawdopodobnie specyficznej sekwencji handshake (może per-id D0/D1 albo ramki typu E4(29) src=0x2X z konkretnym polem "accept"?).
+10. **Rola src=0x56 wake-up'ów (AA/AB/AC,56)** — inny kanał niż src=0x44, inny CRC (K=0x23), payload 0x00. Hipoteza: osobny bus dla EX4/iNEXT/rozszerzeń.
+11. **f[7] w E4 od slave** (obecnie 0x03, wcześniej 0x02) — stałe w całej sesji niezależnie od id, zmienia się między sesjami gdy zmienimy coś w konfigu. Może model firmware, może "liczba urządzeń przekazana przez master w config", może tryb pracy Nano (regulator/termostat/kanałowy).
 
 ---
 

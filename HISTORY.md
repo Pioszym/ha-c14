@@ -45,6 +45,43 @@ Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji pro
 
 **Do zbadania:** czy wake-up skaluje się dalej (`AD` dla id=5, ..., `BC` dla id=20)? Czy master sam dynamicznie generuje wake-up'y po wykryciu nowego slave, czy zawsze nadaje wszystkie 20?
 
+## Sweep id=2..6 (2026-04-24 22:17-23:18)
+
+Test: Nano w trybie slave, manualna zmiana id w menu Nano, zapis reakcji magistrali. Log: `id_sweep_2026-04-24.log`, markery: `id_markers_2026-04-24.txt`.
+
+**Wyniki per id:**
+
+| id | f[3] | Wake-up needed | Nano cyclic E4? | 80 boot po power-on? |
+|----|------|----------------|-----------------|----------------------|
+| 2  | 0x2A | AA,44,08,29   | ✓ (122 ramek) | nie testowano |
+| 3  | 0x2B | AB,44,09,29   | ✓ (1 ramka — krótki pobyt) | nie |
+| 4  | 0x2C | AC,44,0A,29   | ✓ (9 ramek) | nie |
+| 5  | 0x2D | AD,44,0B,29 (BRAK w master) | ✗ cisza | ✓ `80(2D) f[2]=0x62` |
+| 6  | 0x2E | AE,44,0C,29 (BRAK w master) | ✗ cisza | ✓ `80(2E) f[2]=0x63` |
+
+**Wzory potwierdzone:**
+- `f[3] = 0x28 + id` (dla id=2-6, ekstrapolowane do 20)
+- Wake-up: `f[0] = 0xA8 + id`, `f[2] = 0x06 + id` (CRC w src=0x44)
+- 80 boot CRC: `f[2] = 0x5F + (id - 2)` (0x5F dla id=2, 0x62 dla id=5, 0x63 dla id=6)
+- Config push ESP master działa dla każdego id (wykryto 80(2D) i 80(2E) → wysłano E4(29) src=0x2D/0x2E automatycznie)
+
+**Obserwacje "zaskakujące":**
+
+1. **Powrót do id=2 po sweepie przez id=3,4,5,6 — pierwsza próba cisza, druga próba OK.** Nano zachowuje się jakby "pamiętało" stan; druga zmiana id=2 zadziałała bez problemu. Hipoteza: Nano ma wewnętrzny debounce lub czeka na kolejny cykl master by się "włączyć".
+
+2. **Przerwa AERO 22:21:31 → 22:27:09 (~5:40 min)** w trakcie sweepa (przy id=5,6). Początkowo hipoteza "AERO milknie gdy slave id nieobsługiwany" — **ODRZUCONA** przy 4tej próbie id=5 (AERO odpowiadało normalnie). Prawdziwa przyczyna prawdopodobnie: zawieszenie wątku nasłuchu w ESP master po wielokrotnych config push'ach (pomógł restart ESP).
+
+3. **f[7] = 0x03 stałe dla wszystkich id w tej sesji** (wcześniej 0x02). Nie zależy od id slave'a. Zmienia się między sesjami — nieokreślony parametr Nano pamiętany w EEPROM.
+
+4. **Stan unsynced slave po zabawach z ESP master:**
+   - f[28] = 0x03 (brak flagi sync 0x40 — master "nieuznany")
+   - f[24] = 0x32 (50% fan, tryb fallback) zamiast 0x64 (100%)
+   - Nasz ESP master nie ma pełnej sekwencji handshake by przełączyć slave w synced. Config push E4(29) src=0x2X to za mało.
+
+**Implementacja:** rozszerzyć cykl Master Full o wake-up AD..BC (id 5-20) × src=0x44 (16 par ramek). Zwiększa cykl z ~22s do ~35s ale pozwala obsłużyć pełen zakres id zgodnie ze specyfikacją Nano (id=1-20).
+
+**TODO po sesji:** nie zaimplementowane jeszcze — yaml zmiana + compile + flash po następnym kontakcie.
+
 ## ESP8266 SW serial — fantomowe `0xFF`
 
 **Objaw:** Pierwotny sniffer na `wemos04` (ESP8266, software serial GPIO12/13) pokazywał ramki **31 bajtów** kończące się sekwencją `0x23,0xFF`. Skill i stara dokumentacja zapisywały to jako "terminator 0x23+0xFF".
