@@ -20,6 +20,31 @@ Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji pro
 2. Config push E4(29) sam nie wystarcza żeby slave uznał się za zsynchronizowany — brakuje czegoś jeszcze w dialogu master↔slave (do zbadania w kolejnym teście).
 3. E5(29) f[26]=0x50 — nic nie wnosi widocznego w zachowaniu slave. Pozostawić jako "obserwowane u prawdziwego mastera", ale NIE kluczowe dla sync.
 
+### ☆ BREAKTHROUGH: per-id wake-up (2026-04-24)
+
+**Odkrycie:** każde id slave'a ma dedykowaną ramkę wake-up w cyklu Master Full:
+
+| Wake-up | Odbiorca |
+|---|---|
+| `AA,44,08,29,...` (#22) | slave id=2 |
+| `AB,44,09,29,...` (#24) | slave id=3 |
+| `AC,44,0A,29,...` (#26) | slave id=4 |
+| ... | ... |
+
+**Wzór: f[0] = 0xA8 + id**, f[2] CRC rośnie liniowo o +1 per id.
+
+**Dowody (cross-reference log 21:28-21:32):**
+- Nano slave z id=2 odpowiada tylko po `#22_AA,44` (delay ~280ms), IGNORUJE `AB,44`, `AC,44`
+- Nano slave z id=3 odpowiada tylko po `#24_AB,44` (delay ~250-300ms), IGNORUJE `AA,44`
+- Konsystentne przez kilkadziesiąt cykli
+
+**Znaczenie:**
+- **Slave'y nie potrzebują synchronizacji między sobą** — każdy słucha TYLKO swojego wake-up'a, nie ma kolizji
+- ESP może emulować N slave'ów jednocześnie — każdy na swoim wake-up, bezkolizyjnie
+- Master wysyła 6 wake-up'ów w cyklu Full: `AA/AB/AC × src=0x44/0x56` — prawdopodobnie 2 kanały (0x44=dane RS-485, 0x56=?). Ramki src=0x56 mają f[4..]=0x00 zamiast 0x7E — inny format payload.
+
+**Do zbadania:** czy wake-up skaluje się dalej (`AD` dla id=5, ..., `BC` dla id=20)? Czy master sam dynamicznie generuje wake-up'y po wykryciu nowego slave, czy zawsze nadaje wszystkie 20?
+
 ## ESP8266 SW serial — fantomowe `0xFF`
 
 **Objaw:** Pierwotny sniffer na `wemos04` (ESP8266, software serial GPIO12/13) pokazywał ramki **31 bajtów** kończące się sekwencją `0x23,0xFF`. Skill i stara dokumentacja zapisywały to jako "terminator 0x23+0xFF".
