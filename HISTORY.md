@@ -2,6 +2,24 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## Test slave id=2 → id=3 (2026-04-24)
+
+**Setup:** Nano slave jako id=2 (f[3]=0x2A), zmieniono id=3 (f[3]=0x2B) na wyświetlaczu + power cycle. ESP master z `g_slave_ack=true` wysyłający E5(29) f[26]=0x50.
+
+**Obserwacje z ~1h logu:**
+- **f[3] = 0x28+id**: potwierdzone (id=2→0x2A, id=3→0x2B).
+- **Zmiana id w locie** (bez restartu) — slave od razu zaczął nadawać z nowym f[3], bez 80 boot.
+- **Power off/on** wygenerował pojedyncze `80(2B) src=44` (boot announcement) → ESP master wykrył i wysłał config push E4(29) src=0x2B w nast. cyklu. Mechanizm działa dla dowolnego id.
+- **Nano slave "się nie ustawił" na id=3** — mimo że nadaje ramki z 2B i dostał config push, wyświetlacz/logika wewnętrzna nie potwierdza pełnej synchronizacji z masterem. Nasz ESP-master prawdopodobnie nie wysyła wszystkiego, czego slave potrzebuje do "zatwierdzenia" swojej konfiguracji (np. brak jakiegoś handshake `D0`/`D1`?).
+- **E5(29) f[26]=0x50** stabilne przez cały czas — nie powoduje zmiany zachowania slave (ani gdy id=2, ani id=3).
+
+**Korekta poprzedniej hipotezy (f[7] = id slave):** FAŁSZ. W tej sesji slave z id=2 miał f[7]=0x03 (poprzednio 0x02). f[7] nie jest id — to inna wartość (liczba urządzeń w systemie / wersja konfigu / coś pamiętanego między reboot'ami). id slave jest tylko w f[3].
+
+**Wnioski:**
+1. Nasza detekcja boot announcement 80(src=0x44) z f[3]=0x2X + config push E4(29) src=0x2X działa generycznie.
+2. Config push E4(29) sam nie wystarcza żeby slave uznał się za zsynchronizowany — brakuje czegoś jeszcze w dialogu master↔slave (do zbadania w kolejnym teście).
+3. E5(29) f[26]=0x50 — nic nie wnosi widocznego w zachowaniu slave. Pozostawić jako "obserwowane u prawdziwego mastera", ale NIE kluczowe dla sync.
+
 ## ESP8266 SW serial — fantomowe `0xFF`
 
 **Objaw:** Pierwotny sniffer na `wemos04` (ESP8266, software serial GPIO12/13) pokazywał ramki **31 bajtów** kończące się sekwencją `0x23,0xFF`. Skill i stara dokumentacja zapisywały to jako "terminator 0x23+0xFF".
