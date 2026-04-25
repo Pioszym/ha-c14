@@ -308,15 +308,43 @@ Włączenie jednego automatycznie wyłącza drugi.
 
 W AUTO AERO sam decyduje (np. otwiera w trybie Chłodzenie dla free-cooling).
 
-### 8. Zegar i dzień tygodnia (uściślone 2026-04-26)
+### 8. Zegar, dzień tygodnia i DATA (uściślone 2026-04-26 — pełna data odkryta)
 
-**Slave Nano wyświetla tylko godzinę + dzień tygodnia** (nie pełną datę). Master więc wysyła w E4(29) src=21 **tylko:**
+**Master Nano wysyła pełną datę i czas** w E4(29) src=21:
 
 | Pole | Znaczenie |
 |------|-----------|
 | **f[7]** | day_of_week (konwencja `0=Pn, 1=Wt, 2=Śr, 3=Cz, 4=Pt, 5=Sob, 6=Nd`) |
 | **f[8]** | godzina (decimal w hex byte: 0x0A = 10) |
 | **f[9]** | minuta (decimal w hex byte: 0x0F = 15) |
+| **f[25-26]** | **DATA w 3 fazach rotujących** (rok / miesiąc / dzień) |
+
+**☆ Pole f[25-26] — transmisja daty:**
+
+To NIE jest rotator counter (jak myśleliśmy wcześniej). Master cyklicznie wysyła **pełną datę** w 3 fazach po jednej w każdej ramce E4(29) src=21:
+
+| f[25] (faza) | f[26] zawiera | Przykład 15 maja 2022 |
+|--------------|---------------|------------------------|
+| **0x01** | **rok mod 100** (0-99) | 0x16 (=22) |
+| **0x02** | **miesiąc** (1-12) | 0x05 (=5 maj) |
+| **0x03** | **dzień miesiąca** (1-31) | 0x0F (=15) |
+
+Faza inkrementuje co cykl Master Full (~22s). Slave rekonstruuje pełną datę po 3 cyklach (~66s).
+
+**Empirycznie zweryfikowane (2026-04-26):**
+- 3 sty 2020 (Pt) → fazy: `01,14` (rok 20) / `02,01` (sty) / `03,03` (dzień 3) ✓
+- 15 sty 2022 (Sob) → `01,16` / `02,01` / `03,0F` ✓
+- 15 maj 2022 → `01,16` / `02,**05**` / `03,0F` ✓ (zmieniono tylko miesiąc)
+
+**Konsekwencja dla naszej implementacji ESP master:** aktualnie nasz `esp32.yaml` ma 3-fazowy rotator z hardcoded wartościami `01,14 → 02,01 → 03,03` (zaszyte z obserwacji 3 sty 2020). To jest **STAŁA fałszywa data 3 sty 2020**! Trzeba poprawić — wstawiać aktualną datę z `t.day_of_month/month/year`. Jeśli nie poprawimy, slave myśli że jest 3 sty 2020 i kalibruje harmonogram pod tę datę.
+
+**f[4]=0x0A — STAŁA dla Nano master** (nie day_of_month). Niezmieniona przy zmianie daty z 3 na 15. Hipoteza: model device / wersja protokołu / stały marker.
+
+**ESP master nasz (esp32.yaml)** — uwaga! Używa `f[4]=t.day_of_month` i wysyła dynamicznie (np. 0x19 dla 25-go). To jest **NIEZGODNE** z Nano master (który ma stałe 0x0A). Slave prawdopodobnie ignoruje to pole, ale dla pełnej zgodności protokołu można poprawić: ustawić `f[4]=0x0A` zawsze.
+
+**Brak wcześniej widzianej daty w protokole — błąd analizy.** Wcześniej myśleliśmy że Nano nie wysyła daty (slave wyświetla tylko godz+dzień_tygodnia). FAKTYCZNIE — wysyła w f[25-26] ale "ukryte" jako rotator. Slave używa tej daty do harmonogramu (np. wakacje, dni wolne).
+
+**Nano RTC niesync z internetem** — Nano ma własny RTC (na baterii CR2032 prawdopodobnie). Po power cycle często skacze. Protokół C14 zawiera mechanizm transmisji daty w f[25-26] — slave może się sync z mastera (potwierdzone praktycznie).
 
 **Empirycznie zweryfikowane:**
 - 3 sty 2020 (Pt) → f[7]=0x04 ✓
@@ -337,7 +365,6 @@ W AUTO AERO sam decyduje (np. otwiera w trybie Chłodzenie dla free-cooling).
 |------|---------|--------|
 | E5 f[26] | 0x00/0x10/0x50 | "slave_ack" hipoteza, niejednoznaczna |
 | Bit 0 w E4 f[27] | pojawia się tylko Urlop+Wentyl=Manual lub Urlop+Chłodz | nieznana funkcja |
-| f[26] w E4 | rotuje (0x14/0x16/0x0F/0x03) | część rotatora f[25-26], nie data |
 
 ---
 
