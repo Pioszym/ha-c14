@@ -124,6 +124,55 @@ Prawdopodobnie stan menu Nano (sezon/harmonogram/tryb mocy) zapisany w EEPROM.
 
 **Morał:** przy diagnostyce bus RS-485 najpierw sprawdź fizykę (masy, zasilanie, terminacja), potem software. Nasze całe "VS zakłóca AERO" w poprzedniej sesji było efektem luźnego połączenia GND.
 
+### Log startowy z VS id=2 i id=3 (2026-04-25 ~18:23)
+
+Plik: `log_startowy_slave_2_3.log` (4916 linii, 2 power-on Nano master).
+
+**Setup:** ESP w roli slave z aktywnymi VS id=2 (cyclic E4 na AA wake-up) i VS id=3 (cyclic E4 na AB wake-up). Nano master power-cycle.
+
+**Kluczowe obserwacje:**
+
+1. **Pierwsza ramka po power-on** = `E4(29) src=21` (broadcast standardowy), nie żadna init/handshake.
+2. **f[5]=0x40, f[24]=0x64, f[28]=0x43 od pierwszej ramki** — synced state odzyskany z EEPROM, nie wymaga "rozgrzewki".
+3. **Config push leci 23s po power-on** w pozycji #1 drugiego cyklu Master Full, ZASTĘPUJĄC standardowe `E4(29) src=21` w tej pozycji.
+4. **Config push tylko do id=2** — choć VS3 cyklicznie odpowiada na AB wake-up.
+5. W menu Nano **NIE ma listy slave'ów** ani "liczby slave" — jedynie własne id urządzenia. Master nie posiada explicite listy zarejestrowanych slave'ów w UI.
+6. Skąd więc lista do której idzie config push? **Niewiadome empirycznie:** może EEPROM-pamięć "ostatnio widziany slave" (jeden slot, ostatnio aktywne id=2 z wczorajszego sweepu), może zapis przy zaobserwowaniu E4(2X) przez minimalny czas, może coś innego. **Wymaga testów rozdzielczych** by ustalić warunek auto-rejestracji.
+
+### Test rozstrzygający (2026-04-25 18:42-18:48)
+
+**Setup:** ESP slave z VS id=2 i VS id=3 aktywne, Nano master id=1.
+
+**Test 1 (18:42, oba VS aktywne, reboot Nano):**
+- VS2 = 25 odpowiedzi, VS3 = 64 odpowiedzi przed power-off
+- Power-off Nano 18:41:17, power-on 18:42:20
+- Config push o 18:42:43 → **TYLKO src=2A** (do id=2)
+- Brak config push do id=3 mimo aktywnego VS3
+
+**Test 2 (18:48, VS wszystkie OFF, reboot Nano):**
+- Bus pusty (żadne VS nie odpowiadają)
+- Power-on Nano
+- Config push o 18:48:50 → **JEDNAK src=2A** (do id=2)
+- Master wysyła config do id=2 mimo nieobecności slave'a
+
+**Wniosek empiryczny:** id=2 jest **zaszyte w EEPROM Nano mastera** (lub wynika z logiki master_id+1 = 1+1 = 2). Wysyłka config push **NIE zależy od:**
+- Aktywności slave'a na busie
+- Liczby slave'ów odpowiadających
+- Luki w numeracji id
+
+**Hipoteza H "luki w id" — odrzucona.**
+**Hipoteza I "ignorowanie przez cyklic AA/AB" — odrzucona.**
+**Hipoteza J "id=2 zaszyte" — potwierdzona.**
+
+**Niewiadome do dalszych testów:**
+- Jak zarejestrować nowe id w master EEPROM? (potencjalne procedury: serwisowe menu, factory reset, sekwencja klawiszy)
+- Czy zmiana id mastera (np. na id=2) zmienia adresata config push (na id=3 = master+1)? Test wymaga zmiany id mastera w jego menu.
+6. Master nadaje wake-up'y `AA/AB/AC × src=44/56` niezależnie od zarejestrowanych slave'ów (statyczna lista, nie dynamiczna).
+
+**Konsekwencja dla naszej emulacji:**
+- ESP master **wysyłający config push reaktywnie na 80** to dodatkowa funkcjonalność ponad protokół Nano (Nano nie reaguje na 80 od slave w trybie pracy)
+- Slave po power-on w realnym scenariuszu czeka aż **master się zrebootuje** żeby dostać świeży config push, lub liczy się z tym że sam musi wybierać konfigurację z broadcastów (E4 src=21, E5, D0-D5)
+
 ### Status szablonu VS
 
 Szablon VS nadaje: f[7]=0x02, f[24]=0x64, f[28]=0x43 (skopiowane z synced Nano slave). Drobne potencjalne ulepszenia (niepilne):

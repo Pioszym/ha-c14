@@ -53,3 +53,15 @@ Nano ON (all VS off test) 00:42:29
 ROZWIAZANIE: masa RS-485 sie poluzowala (sprzetowe)
 Wczesniejsze problemy AERO zaszywane za VS - faktycznie bylo poluzowane polaczenie!
 === TEST FINAL: all VS on, po naprawie masy 00:51:20 ===
+Skan VS2-only 09:51:15
+=== Test 80(2A) po dluzszej przerwie - czas 17:17:40 ===
+VS2 OFF + Nano master power off 17:25:24
+Nano OFF dluzsze + zapis logu test80 17:29:00
+=== TEST VS3 ON 18:13:49 ===
+Nano master OFF 18:21:33 (VS2 OFF, VS3 ON aktywne)
+Nano master ON 18:23:10
+=== Test VS2+VS3 ON, Nano power-cycle 18:40:36 ===
+Nano OFF 18:41:30 (VS2 ON + VS3 ON)
+Nano ON 18:42:24
+Nano OFF 18:47:57 (test: VS2/3 OFF na busie pusto)
+Nano ON 18:48:29 (slave OFF, czysty bus)
