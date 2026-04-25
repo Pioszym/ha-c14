@@ -249,15 +249,38 @@ ON/OFF — niezależny od sezonu i trybu temp.
 | **E3 f[27]** bit 0x20 | 0 | **+0x20** |
 | **E5 f[27]** | brak wpływu | brak wpływu |
 
-### 5. Programy trybu pracy (NIEZWERYFIKOWANE — wymaga testu)
+### 5. Programy trybu pracy (zweryfikowane 2026-04-26)
 
-W menu Nano są dodatkowe programy: **Poza domem (Nano 1)** i **Urlopowy**. Wstępnie (z PROTOCOL.md poprzedniej wersji):
+W menu Nano "Program" jest **3-stanowy radio** (mutually exclusive):
+- **Normal** (żadna ikona) — domyślny harmonogram
+- **Poza domem** (ikona poza domem)
+- **Urlop** (ikona urlopu)
 
-- Normal/Harmonogram → f[5]=0x44, f[28]=0x03 (bit 0x04 = harmonogram aktywny)
-- Poza Domem → f[5]=0x44, f[28]=0x03 (identyczne jak Normal — Nano aplikuje setpoint Poza Domem lokalnie)
-- Urlop → f[5]=0x40, f[28]=0x02 (bit 0x04 wyłączony)
+Włączenie jednego automatycznie wyłącza drugi.
 
-**TODO:** zweryfikować gdy będzie okazja — przełączyć "Program" w menu Nano i obserwować zmiany w f[5] i f[28].
+**Empirycznie potwierdzone:**
+
+| Program | f[5] | f[28] (E4) | f[15] aktywny setpoint |
+|---------|------|-----------|------------------------|
+| **Normal** | 0x44 | bieg z harmonogramu (0x03 dla B1) | eco_zima/comfort/poza_domem (cyklicznie z harmonogramu) |
+| **Poza domem** | 0x44 | bieg z harmonogramu (0x03 dla B1) | **poza_domem (20°C) stale** |
+| **Urlop** | 0x40 | **0x02** (specjalny kod "stop urlop") | poza_domem (20°C) |
+
+**Bit 0x04 w f[5] = "harmonogram aktywny"**:
+- SET (f[5]=0x44) → master rotuje setpoint zgodnie z harmonogramem (lub używa Poza_domem dla Programu Poza domem)
+- CLEAR (f[5]=0x40) → harmonogram zatrzymany, wentylator zatrzymany (Urlop)
+
+**Różnica Normal vs Poza domem:**
+- W ramce **identyczne** (oba f[5]=0x44, f[28]=0x03)
+- Setpoint może się różnić — Poza domem stale używa Poza_domem (20°C), Normal cyklicznie wybiera z harmonogramu
+- Z perspektywy slave i AERO **nieodróżnialne** — Nano aplikuje override lokalnie
+
+**Różnica Urlop:**
+- f[28]=0x02 to **wartość poza tabelą biegów** (bit 0 "validity" = 0) — kod "zatrzymaj komendę biegu"
+- AERO interpretuje jako "tryb urlop, wentylacja minimalna"
+- f[5] bit 0x04 wyłączony — harmonogram nieaktywny
+
+**Setpoint współdzielony:** menu serwisowe Nano ma jedną nastawę "Poza Domem" (20°C) używaną dla OBU programów (Poza domem i Urlop).
 
 ### 6. Setpointy temperatur (menu serwisowe Nano)
 
