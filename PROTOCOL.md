@@ -308,15 +308,36 @@ Włączenie jednego automatycznie wyłącza drugi.
 
 W AUTO AERO sam decyduje (np. otwiera w trybie Chłodzenie dla free-cooling).
 
-### 8. Pozostałe pola w ramkach Nano (niezmapowane)
+### 8. Zegar i dzień tygodnia (uściślone 2026-04-26)
+
+**Slave Nano wyświetla tylko godzinę + dzień tygodnia** (nie pełną datę). Master więc wysyła w E4(29) src=21 **tylko:**
+
+| Pole | Znaczenie |
+|------|-----------|
+| **f[7]** | day_of_week (konwencja `0=Pn, 1=Wt, 2=Śr, 3=Cz, 4=Pt, 5=Sob, 6=Nd`) |
+| **f[8]** | godzina (decimal w hex byte: 0x0A = 10) |
+| **f[9]** | minuta (decimal w hex byte: 0x0F = 15) |
+
+**Empirycznie zweryfikowane:**
+- 3 sty 2020 (Pt) → f[7]=0x04 ✓
+- 3 sty 2022 (Pn) → f[7]=0x00 ✓
+- 15 sty 2022 (Sob) → f[7]=0x05 ✓
+
+**f[4]=0x0A — STAŁA dla Nano master** (nie day_of_month). Niezmieniona przy zmianie daty z 3 na 15. Hipoteza: model device / wersja protokołu / stały marker.
+
+**ESP master nasz (esp32.yaml)** — uwaga! Używa `f[4]=t.day_of_month` i wysyła dynamicznie (np. 0x19 dla 25-go). To jest **NIEZGODNE** z Nano master (który ma stałe 0x0A). Slave prawdopodobnie ignoruje to pole, ale dla pełnej zgodności protokołu można poprawić: ustawić `f[4]=0x0A` zawsze.
+
+**Brak daty (rok/miesiąc/dzień_miesiąca) w protokole C14** — Nano nie potrzebuje, bo slave nie wyświetla. Data jest lokalnie w EEPROM Nano (do harmonogramu), nie po busie.
+
+**Nano RTC niesync z internetem** — Nano ma własny RTC (na baterii CR2032 prawdopodobnie). Po power cycle często skacze (widzieliśmy slave na 8:49 pt vs faktycznie 23:21 sob). Protokół C14 nie zawiera mechanizmu sync zegara z mastera (mimo komunikatu w menu Nano "godzinę ustawia Nano 1").
+
+### 9. Pozostałe pola niezmapowane
 
 | Pole | Wartość | Status |
 |------|---------|--------|
-| E4 f[4] | 0x0A (Nano) / 0x19 (ESP day_of_month) | różne — dla Nano stałe, ESP dynamiczne |
-| E4 f[7] | 0x03 (Nano) / 0x07 (ESP day_of_week) | różne |
-| E4 f[8-9] | godz/min Nano (jego RTC) | dynamiczne |
 | E5 f[26] | 0x00/0x10/0x50 | "slave_ack" hipoteza, niejednoznaczna |
 | Bit 0 w E4 f[27] | pojawia się tylko Urlop+Wentyl=Manual lub Urlop+Chłodz | nieznana funkcja |
+| f[26] w E4 | rotuje (0x14/0x16/0x0F/0x03) | część rotatora f[25-26], nie data |
 
 ---
 
