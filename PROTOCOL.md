@@ -565,17 +565,66 @@ Gdy Nano w trybie slave (id ≠ 1) startuje (power-on), nadaje **jeden raz** ram
 - Nawet jeśli master nie ma wake-up'a dla tego id — 80 boot leci **bezwarunkowo**
 - ESP master wykrywa 80(2X) i wysyła config push `E4(29) src=0x2X` w nast. cyklu #1 — ale to **nie wystarcza** do pełnego "sparowania" slave'a (f[28] pozostaje 0x03 bez flagi sync 0x40)
 
-### Stan slave: synced vs unsynced
+### Stany Nano slave w E4(2X) src=21 — synced vs unsynced
 
-**Flaga sync (bit 0x40 w f[28] ramki E4(2X) od slave):**
+**Obserwowane 2 wyraźne stany Nano slave (w f[24] i f[28]):**
 
-| Pole | Slave "synced" z oryginalnym Nano master | Slave z naszym ESP master |
-|------|------------------------------------------|---------------------------|
-| f[7]  | 0x02 | **0x03** |
-| f[24] | 0x64 (100%) | **0x32 (50%)** |
-| f[28] | 0x43 (sync\|B1) | **0x03 (B1 bez sync)** |
+| Stan | f[24] | f[28] | Kontekst |
+|------|-------|-------|----------|
+| **NORMALNY (synced)** | 0x64 (100%) | 0x43 (`0x40\|0x03` = sync flag + B1) | Nano slave w długiej, stabilnej pracy z prawdziwym Nano masterem |
+| **AWARYJNY (unsynced)** | 0x32 (50%) | 0x03 (sam B1, brak flagi 0x40) | Po naszych eksperymentach z ESP master, po kilku zmianach id w menu, po długim braku komunikacji z masterem |
 
-Obserwacja: ESP master wysyłający config push E4(29) src=0x2X i wake-up nie wystarcza by przełączyć Nano slave w stan "synced" (flaga 0x40 w f[28]). Brakuje jakiegoś dodatkowego elementu w dialogu (prawdopodobnie konkretny format D0/D1 specyficzny dla id, lub handshake po 80 boot).
+**f[7] również się zmienia:**
+- `0x02` w starszych sesjach (możliwe normal mode)
+- `0x03` w nowszych sesjach (po naszych zabawach — może liczba urządzeń w EEPROM)
+
+**Co prawdopodobnie wywołuje przejście NORMAL → AWARYJNY:**
+1. Wewnętrzny watchdog Nano slave po wykryciu nieprawidłowości
+2. Brak konkretnej ramki od mastera w cyklu (np. niepełny D0-D5, brakuje E5 setpointów)
+3. Niezgodność w E4(29) src=0x2X (config push) — slave porównuje z własnym EEPROM i wykrywa nieprawidłowość
+4. Długi czas bez triggera AERO (slave widzi "system się sypie")
+
+**Co przywraca AWARYJNY → NORMAL:**
+- Power-cycle slave + obecność prawdziwego Nano mastera + AERO (potwierdzono empirycznie)
+- Naszego ESP master config push E4(29) src=0x2A **nie wystarcza** (mimo że ramka 1:1 z Nano)
+- Może dodatkowo wymaga: rotator f[25-26] zsynchronizowany z masterem, konkretna sekwencja po 80 boot, albo specjalna treść D0-D5
+
+**Niewiadome bajty w E4(29) src=21 (master broadcast / slave response):**
+
+```
+E4,21,CRC,29|2X, [4]?,[5]?,[6]?,[7]?,
+                 [8]godz,[9]min,[10]7E,[11]?,
+                 [12-13]Tpokoj,[14-15]Tset,
+                 [16-22]7E×7 fill,
+                 [23]?,[24]mocy?,[25-26]rotator,[27]?,[28]flag|bieg,[29]23
+```
+
+Do zbadania: które konkretnie z `f[4]`, `f[5]`, `f[6]`, `f[11]`, `f[23]`, `f[27]` są krytyczne dla utrzymania synced.
+
+**Hipoteza: rotator f[25-26] może wymagać sync z masterem.**
+- Master rotuje przez wartości w E4(29) src=21 (np. `01,14`/`02,01`/`03,02` cyklicznie)
+- Slave może echować to samo (lub kontrowariantne) — jeśli slave nie nadąża, master wykrywa desync
+- Nasz VS wysyła stałe `02,01` (lub przed-flaszem `01,14`) — może to wywołuje awaryjny
+
+**Obserwacja praktyczna z config push:** ramka E4(29) src=0x2A (`E4,2A,43,29,0D,01,05,28,1C,2A,00,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,53,23`) zawiera **całkowicie inny payload** niż E4(29) src=21:
+
+| f[i] | E4(29) src=21 (broadcast) | E4(29) src=0x2X (config push) |
+|------|---------------------------|-------------------------------|
+| 4 | 0x0A | **0x0D** (różne!) |
+| 5 | 0x40 | **0x01** |
+| 6 | 0x00 | **0x05** |
+| 7 | 0x03 | **0x28** |
+| 8-9 | zegar | **0x1C, 0x2A** |
+| 10-11 | 0x7E,0x00 | **0x00, 0x1E** |
+| 12-13 | T pokoj | **0x01, 0x17** |
+| 14-15 | T setpoint | **0x5F, 0x64** |
+| 16 | 0x7E fill | **0x18** |
+| ... | większość 0x7E | **wypełnione różnymi danymi** |
+| 24 | 0x64 (mocy) | **0x4B** |
+| 25 | rotator | **0x20** |
+| 28 | flag\|bieg | **0x53** |
+
+Czyli config push to **zupełnie inny zestaw danych** — to konfiguracja systemu (sezon, harmonogram, setpointy globalne, kalibracja AERO). Slave ma to "absorbować" do swojego EEPROM.
 
 ### Nano slave — czas i RTC
 
