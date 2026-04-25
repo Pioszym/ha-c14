@@ -346,6 +346,28 @@ Faza inkrementuje co cykl Master Full (~22s). Slave rekonstruuje pełną datę p
 
 **Nano RTC niesync z internetem** — Nano ma własny RTC (na baterii CR2032 prawdopodobnie). Po power cycle często skacze. Protokół C14 zawiera mechanizm transmisji daty w f[25-26] — slave może się sync z mastera (potwierdzone praktycznie).
 
+### Slave SYNC z mastera — pełna lista zsynchronizowanych pól (potwierdzone 2026-04-26)
+
+Po dokładniejszej obserwacji **slave Nano synchronizuje WSZYSTKIE poniższe pola** z aktualnym master broadcast E4(29) src=21:
+
+| Pole | Sync? | Mechanizm |
+|------|-------|-----------|
+| **Godzina (f[8])** | ✅ TAK | Slave widzi f[8] mastera w ramach 1-2 cykli i aktualizuje wewnętrzny RTC |
+| **Minuta (f[9])** | ✅ TAK | Slave inkrementuje minutę zgodnie z mastera |
+| **Dzień tygodnia (f[7])** | ✅ TAK | Slave kopiuje wartość |
+| **Data (f[25-26] w 3 fazach)** | ✅ TAK | Slave rekonstruuje rok/miesiąc/dzień po 3 cyklach |
+| **Sezon (f[27] bity 3-4)** | ✅ TAK | Slave odbija aktualny sezon Zima/Lato bez/Chłodzenie |
+| **Tryb termostatu (f[27] bity 0-1)** | ✅ TAK | Slave odbija Manual/Harm/Urlop |
+| **Wietrzenie (f[27] bit 0x20)** | ✅ TAK | Slave odbija overlay wietrzenia |
+| **Bieg (f[28])** | ✅ TAK | Slave odbija aktualny bieg + flagi |
+| **Setpoint aktywny (f[14-15])** | ✅ TAK | Slave odbija aktualny setpoint regulacji |
+
+Slave jest **w pełni reaktywny** na master — wszystko co master nadaje, slave przyjmuje i odbija w swoim cyclic E4(2A) src=21 (po wake-up).
+
+**Komunikat menu Nano "godzinę ustawia Nano 1"** — TERAZ POTWIERDZONE: master id=1 dostarcza godzinę przez f[8-9] w broadcast. Slave przyjmuje natychmiast.
+
+Wcześniejsze stwierdzenie "slave nie sync zegar" było **błędne** — wynikło z analizy starych ramek z czasów gdy slave nie zdążył jeszcze zsynchronizować po przełączeniu trybu.
+
 **Empirycznie zweryfikowane:**
 - 3 sty 2020 (Pt) → f[7]=0x04 ✓
 - 3 sty 2022 (Pn) → f[7]=0x00 ✓
