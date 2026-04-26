@@ -329,7 +329,9 @@ Master nadaje czas + datę w E4(29) src=0x21:
 
 Slave rekonstruuje pełną datę po 3 cyklach (~66s).
 
-### 9. Slave SYNC z mastera
+---
+
+## Slave SYNC z mastera
 
 Slave Nano (E4(2A) src=0x21) odbija w cyclic odpowiedzi WSZYSTKIE pola z mastera:
 
@@ -343,14 +345,6 @@ Slave Nano (E4(2A) src=0x21) odbija w cyclic odpowiedzi WSZYSTKIE pola z mastera
 | f[14-15] aktywny setpoint | f[14-15] master |
 
 Slave jest **w pełni reaktywny** — wszystko co master nadaje, slave przyjmuje natychmiast (1-3 cykle).
-
-### 10. Pozostałe pola niezmapowane
-
-| Pole | Wartość | Status |
-|------|---------|--------|
-| E4 f[4] | 0x0A | stała dla Nano master, znaczenie nieznane |
-| E5 f[26] | 0x00/0x10/0x50 | "slave_ack" hipoteza, niejednoznaczna |
-| Bit 0 w E4 f[27] | pojawia się tylko Urlop+Wentyl=Manual / Urlop+Chłodz | funkcja nieznana |
 
 ---
 
@@ -368,24 +362,30 @@ E4,21,[cks],29,[DOM],40,00,[DOW],[HH],[MM],7E,00,[TRM_H],[TRM_L],[SP_H],[SP_L],7
 | f[1] | `0x21` | marker typu (komenda master) | KNOWN |
 | f[2] | zmienne | checksum (K=0xA3) | KNOWN |
 | f[3] | `0x29` | subtyp (master id=1) | KNOWN |
-| f[4] | 1-31 | **Dzień miesiąca** | KNOWN |
+| f[4] | `0x0A` | stała dla Nano master (znaczenie nieznane) | UNKNOWN |
 | f[5] | `0x40/0x44` | **Flaga trybu:** `0x44`=harmonogram aktywny (Normal/Poza domem), `0x40`=harmonogram WYŁĄCZONY (URLOP) | KNOWN |
 | f[6] | `0x00` | stałe | UNKNOWN |
-| f[7] | 1-7 | **Dzień tygodnia** (1=Mon..7=Sun, encoding do weryfikacji) | PARTIAL |
-| f[8] | 0-23 | **Godzina** | KNOWN |
-| f[9] | 0-59 | **Minuta** | KNOWN |
+| f[7] | 0-6 | **Dzień tygodnia** (`0=Pn..6=Nd`) | KNOWN |
+| f[8] | 0-23 | **Godzina** (decimal jako byte) | KNOWN |
+| f[9] | 0-59 | **Minuta** (decimal jako byte) | KNOWN |
 | f[10] | `0x7E/0x08` | 0x7E normalnie, 0x08 obserwowane przy fan OFF | PARTIAL |
 | f[11] | `0x00` | stałe | UNKNOWN |
 | f[12-13] | HH,LL | **Temp pokojowa Nano** (sensor wewn CTP) | KNOWN |
 | f[14-15] | HH,LL | **Aktywny setpoint** (śledzi aktualnie wybrany tryb: Comfort/Eco/itp.) | KNOWN |
 | f[16-22] | `0x7E` ×7 | stałe fillery | UNKNOWN |
 | f[23] | `0x14` | stałe | UNKNOWN |
-| f[24] | `0x32/0x64/0x00` | zmienne (0x32 w zwykłym, 0x64 master mini, 0x00 chłodzenie) | UNKNOWN |
-| f[25] | `0x01/0x02/0x03` | **Rotator cyklu:** 01 → 02 → 03 → 01 | KNOWN |
-| f[26] | Lookup od f[25] | 01→`0x1A`, 02→`0x04`, 03→{`0x0E`,`0x0F`,`0x13`} (wariabilne) | KNOWN |
+| f[24] | `0x32/0x64` | tryb mocy: 0x64 = synced (Manual+Zima), 0x32 = unsynced/awaryjny | KNOWN |
+| f[25] | `0x00/0x01/0x02/0x03` | **Faza transmisji daty:** 0x00 init, 1=rok, 2=miesiąc, 3=dzień | KNOWN |
+| f[26] | wartość daty | zależnie od f[25]: rok mod 100 / miesiąc 1-12 / dzień 1-31 | KNOWN |
 | f[27] | bitfield | **Multi-field encoding** (tryb temp + sezon + wietrzenie, patrz niżej) | KNOWN |
 | f[28] | bitfield | **BIEG + overlays** (patrz niżej) | KNOWN |
 | f[29] | `0x23` | terminator | KNOWN |
+
+**Niezmapowane / niejednoznaczne w E4(29) src=0x21:**
+- f[4]=0x0A — stała Nano (model? wersja?)
+- f[10] — 0x7E/0x08 podczas fan OFF
+- f[23]=0x14 — stała nieznana
+- Bit 0 w f[27] — pojawia się tylko Urlop+Wentyl=Manual / Urlop+Chłodz, funkcja nieznana
 
 ### E4(29) f[27] — multi-field encoding (uściślone 2026-04-25)
 
@@ -603,10 +603,10 @@ E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECO_H],[ECO_L],[CHL_H],[CHL_
 | f[5] | `0x00` | stałe zero | UNKNOWN (filler?) |
 | f[6-7] | HH,LL | **T.Czerpnia** (kopia z AERO E4(63), NIE sensor pokojowy) | KNOWN |
 | f[8-9] | HH,LL | **Comfort** setpoint | KNOWN |
-| f[10-11] | HH,LL | **Eco** setpoint | KNOWN |
-| f[12-13] | HH,LL | **Chłodzenie** setpoint | KNOWN |
-| f[14-15] | HH,LL | **Zadana ręczna** setpoint | KNOWN |
-| f[16-17] | HH,LL | **Poza domem** setpoint | KNOWN |
+| f[10-11] | HH,LL | **Eco zima** setpoint (aktywny gdy sezon=Zima) | KNOWN |
+| f[12-13] | HH,LL | **Eco lato/chłodzenie** setpoint (aktywny gdy sezon=Lato/Chłodz) | KNOWN |
+| f[14-15] | HH,LL | **Manual / Zadana ręczna** setpoint | KNOWN |
+| f[16-17] | HH,LL | **Poza domem** setpoint (Urlop+Zima, Poza domem) | KNOWN |
 | f[18] | `0x00` | stałe | UNKNOWN |
 | f[19] | `0x30` | stałe (niezależne od lato/zima/chłodz) | UNKNOWN |
 | f[20] | `0x7E` | stałe (filler) | UNKNOWN |
