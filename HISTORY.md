@@ -15,7 +15,32 @@ Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji pro
 
 **Korekta poprzedniej hipotezy (f[7] = id slave):** FAŁSZ. W tej sesji slave z id=2 miał f[7]=0x03 (poprzednio 0x02). f[7] nie jest id — to inna wartość (liczba urządzeń w systemie / wersja konfigu / coś pamiętanego między reboot'ami). id slave jest tylko w f[3].
 
-**Wnioski:**
+## Mapowanie f[25-26] = data (2026-04-26)
+
+Wcześniej myśleliśmy że f[25-26] w E4(29) src=0x21 to "rotator" 3-fazowy z hardcoded wartościami (`01,14 / 02,01 / 03,03`). FAKTYCZNIE to **3-fazowa transmisja daty** (rok/miesiąc/dzień).
+
+**Empirycznie zweryfikowane:**
+- 3 sty 2020 (Pt) → fazy: `01,14` (rok 20) / `02,01` (sty) / `03,03` (dzień 3)
+- 3 sty 2022 (Pn) → `01,16` / `02,01` / `03,03`, f[7]=0x00
+- 15 sty 2022 (Sob) → `01,16` / `02,01` / `03,0F`, f[7]=0x05
+- 15 maj 2022 → `01,16` / `02,05` / `03,0F`
+
+Konsekwencja: nasza implementacja ESP master miała **hardcoded fałszywą datę 3 sty 2020**. Po fixie wstawia datę z SNTP (ESPHome `t.year/month/day_of_month`).
+
+## f[4] u Nano master = stała 0x0A (2026-04-26)
+
+Wcześniej (z analizy ESP master gdzie wpisaliśmy `f[4]=t.day_of_month`) myśleliśmy że f[4] = day_of_month. FAŁSZ — Nano master ma `f[4]=0x0A` zawsze, niezależnie od daty (sprawdzone na 3 sty 2020 → 15 sty 2022). Hipoteza: model device / wersja protokołu.
+
+## Slave SYNC — od kiedy potwierdzamy (2026-04-26)
+
+Wcześniejsza ramka PROTOCOL.md zawierała stwierdzenie "slave nie sync zegar z mastera" — **błędne**. Wynikało z analizy starych ramek z czasów gdy slave nie zdążył jeszcze zsynchronizować po przełączeniu trybu (np. po power cycle widziano "8:49 pt" mimo faktycznie 23:21 sob).
+
+Faktyczna obserwacja (po fixie ESP master daty + dłuższym oczekiwaniu): slave w pełni odbiera godzinę, dzień tygodnia i datę od mastera w 1-3 cyklach.
+
+Komunikat w menu Nano "godzinę ustawia Nano 1" jest poprawny — master id=1 dostarcza zegar przez f[8-9] + datę przez f[25-26].
+
+## Wnioski (sweep id=2..6 + per-id wake-up):
+
 1. Nasza detekcja boot announcement 80(src=0x44) z f[3]=0x2X + config push E4(29) src=0x2X działa generycznie.
 2. Config push E4(29) sam nie wystarcza żeby slave uznał się za zsynchronizowany — brakuje czegoś jeszcze w dialogu master↔slave (do zbadania w kolejnym teście).
 3. E5(29) f[26]=0x50 — nic nie wnosi widocznego w zachowaniu slave. Pozostawić jako "obserwowane u prawdziwego mastera", ale NIE kluczowe dla sync.

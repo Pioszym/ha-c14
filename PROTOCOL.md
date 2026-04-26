@@ -308,85 +308,49 @@ Włączenie jednego automatycznie wyłącza drugi.
 
 W AUTO AERO sam decyduje (np. otwiera w trybie Chłodzenie dla free-cooling).
 
-### 8. Zegar, dzień tygodnia i DATA (uściślone 2026-04-26 — pełna data odkryta)
+### 8. Zegar, dzień tygodnia i data
 
-**Master Nano wysyła pełną datę i czas** w E4(29) src=21:
+Master nadaje czas + datę w E4(29) src=0x21:
 
-| Pole | Znaczenie |
-|------|-----------|
-| **f[7]** | day_of_week (konwencja `0=Pn, 1=Wt, 2=Śr, 3=Cz, 4=Pt, 5=Sob, 6=Nd`) |
-| **f[8]** | godzina (decimal w hex byte: 0x0A = 10) |
-| **f[9]** | minuta (decimal w hex byte: 0x0F = 15) |
-| **f[25-26]** | **DATA w 3 fazach rotujących** (rok / miesiąc / dzień) |
+| Pole | Znaczenie | Format |
+|------|-----------|--------|
+| f[7] | day_of_week | `0=Pn, 1=Wt, 2=Śr, 3=Cz, 4=Pt, 5=Sob, 6=Nd` |
+| f[8] | godzina | decimal jako byte (0x0A=10) |
+| f[9] | minuta | decimal jako byte (0x0F=15) |
+| f[25-26] | data w 3 fazach (rotujące) | patrz tabela poniżej |
 
-**☆ Pole f[25-26] — transmisja daty:**
+**Transmisja daty f[25-26]** — 3 fazy po 1 ramce każda, master rotuje co cykl Master Full:
 
-To NIE jest rotator counter (jak myśleliśmy wcześniej). Master cyklicznie wysyła **pełną datę** w 3 fazach po jednej w każdej ramce E4(29) src=21:
+| f[25] | f[26] |
+|-------|-------|
+| 0x01 | rok mod 100 (np. 0x16=22 → 2022) |
+| 0x02 | miesiąc (1-12) |
+| 0x03 | dzień miesiąca (1-31) |
 
-| f[25] (faza) | f[26] zawiera | Przykład 15 maja 2022 |
-|--------------|---------------|------------------------|
-| **0x01** | **rok mod 100** (0-99) | 0x16 (=22) |
-| **0x02** | **miesiąc** (1-12) | 0x05 (=5 maj) |
-| **0x03** | **dzień miesiąca** (1-31) | 0x0F (=15) |
+Slave rekonstruuje pełną datę po 3 cyklach (~66s).
 
-Faza inkrementuje co cykl Master Full (~22s). Slave rekonstruuje pełną datę po 3 cyklach (~66s).
+### 9. Slave SYNC z mastera
 
-**Empirycznie zweryfikowane (2026-04-26):**
-- 3 sty 2020 (Pt) → fazy: `01,14` (rok 20) / `02,01` (sty) / `03,03` (dzień 3) ✓
-- 15 sty 2022 (Sob) → `01,16` / `02,01` / `03,0F` ✓
-- 15 maj 2022 → `01,16` / `02,**05**` / `03,0F` ✓ (zmieniono tylko miesiąc)
+Slave Nano (E4(2A) src=0x21) odbija w cyclic odpowiedzi WSZYSTKIE pola z mastera:
 
-**Konsekwencja dla naszej implementacji ESP master:** aktualnie nasz `esp32.yaml` ma 3-fazowy rotator z hardcoded wartościami `01,14 → 02,01 → 03,03` (zaszyte z obserwacji 3 sty 2020). To jest **STAŁA fałszywa data 3 sty 2020**! Trzeba poprawić — wstawiać aktualną datę z `t.day_of_month/month/year`. Jeśli nie poprawimy, slave myśli że jest 3 sty 2020 i kalibruje harmonogram pod tę datę.
+| Pole slave | Źródło z mastera |
+|------------|------------------|
+| f[7] day_of_week | f[7] master |
+| f[8-9] godz/min | f[8-9] master |
+| f[25-26] data (3 fazy) | f[25-26] master |
+| f[27] tryb termostatu + sezon + wietrzenie | f[27] master |
+| f[28] bieg + flagi | f[28] master |
+| f[14-15] aktywny setpoint | f[14-15] master |
 
-**f[4]=0x0A — STAŁA dla Nano master** (nie day_of_month). Niezmieniona przy zmianie daty z 3 na 15. Hipoteza: model device / wersja protokołu / stały marker.
+Slave jest **w pełni reaktywny** — wszystko co master nadaje, slave przyjmuje natychmiast (1-3 cykle).
 
-**ESP master nasz (esp32.yaml)** — uwaga! Używa `f[4]=t.day_of_month` i wysyła dynamicznie (np. 0x19 dla 25-go). To jest **NIEZGODNE** z Nano master (który ma stałe 0x0A). Slave prawdopodobnie ignoruje to pole, ale dla pełnej zgodności protokołu można poprawić: ustawić `f[4]=0x0A` zawsze.
-
-**Brak wcześniej widzianej daty w protokole — błąd analizy.** Wcześniej myśleliśmy że Nano nie wysyła daty (slave wyświetla tylko godz+dzień_tygodnia). FAKTYCZNIE — wysyła w f[25-26] ale "ukryte" jako rotator. Slave używa tej daty do harmonogramu (np. wakacje, dni wolne).
-
-**Nano RTC niesync z internetem** — Nano ma własny RTC (na baterii CR2032 prawdopodobnie). Po power cycle często skacze. Protokół C14 zawiera mechanizm transmisji daty w f[25-26] — slave może się sync z mastera (potwierdzone praktycznie).
-
-### Slave SYNC z mastera — pełna lista zsynchronizowanych pól (potwierdzone 2026-04-26)
-
-Po dokładniejszej obserwacji **slave Nano synchronizuje WSZYSTKIE poniższe pola** z aktualnym master broadcast E4(29) src=21:
-
-| Pole | Sync? | Mechanizm |
-|------|-------|-----------|
-| **Godzina (f[8])** | ✅ TAK | Slave widzi f[8] mastera w ramach 1-2 cykli i aktualizuje wewnętrzny RTC |
-| **Minuta (f[9])** | ✅ TAK | Slave inkrementuje minutę zgodnie z mastera |
-| **Dzień tygodnia (f[7])** | ✅ TAK | Slave kopiuje wartość |
-| **Data (f[25-26] w 3 fazach)** | ✅ TAK | Slave rekonstruuje rok/miesiąc/dzień po 3 cyklach |
-| **Sezon (f[27] bity 3-4)** | ✅ TAK | Slave odbija aktualny sezon Zima/Lato bez/Chłodzenie |
-| **Tryb termostatu (f[27] bity 0-1)** | ✅ TAK | Slave odbija Manual/Harm/Urlop |
-| **Wietrzenie (f[27] bit 0x20)** | ✅ TAK | Slave odbija overlay wietrzenia |
-| **Bieg (f[28])** | ✅ TAK | Slave odbija aktualny bieg + flagi |
-| **Setpoint aktywny (f[14-15])** | ✅ TAK | Slave odbija aktualny setpoint regulacji |
-
-Slave jest **w pełni reaktywny** na master — wszystko co master nadaje, slave przyjmuje i odbija w swoim cyclic E4(2A) src=21 (po wake-up).
-
-**Komunikat menu Nano "godzinę ustawia Nano 1"** — TERAZ POTWIERDZONE: master id=1 dostarcza godzinę przez f[8-9] w broadcast. Slave przyjmuje natychmiast.
-
-Wcześniejsze stwierdzenie "slave nie sync zegar" było **błędne** — wynikło z analizy starych ramek z czasów gdy slave nie zdążył jeszcze zsynchronizować po przełączeniu trybu.
-
-**Empirycznie zweryfikowane:**
-- 3 sty 2020 (Pt) → f[7]=0x04 ✓
-- 3 sty 2022 (Pn) → f[7]=0x00 ✓
-- 15 sty 2022 (Sob) → f[7]=0x05 ✓
-
-**f[4]=0x0A — STAŁA dla Nano master** (nie day_of_month). Niezmieniona przy zmianie daty z 3 na 15. Hipoteza: model device / wersja protokołu / stały marker.
-
-**ESP master nasz (esp32.yaml)** — uwaga! Używa `f[4]=t.day_of_month` i wysyła dynamicznie (np. 0x19 dla 25-go). To jest **NIEZGODNE** z Nano master (który ma stałe 0x0A). Slave prawdopodobnie ignoruje to pole, ale dla pełnej zgodności protokołu można poprawić: ustawić `f[4]=0x0A` zawsze.
-
-**Brak daty (rok/miesiąc/dzień_miesiąca) w protokole C14** — Nano nie potrzebuje, bo slave nie wyświetla. Data jest lokalnie w EEPROM Nano (do harmonogramu), nie po busie.
-
-**Nano RTC niesync z internetem** — Nano ma własny RTC (na baterii CR2032 prawdopodobnie). Po power cycle często skacze (widzieliśmy slave na 8:49 pt vs faktycznie 23:21 sob). Protokół C14 nie zawiera mechanizmu sync zegara z mastera (mimo komunikatu w menu Nano "godzinę ustawia Nano 1").
-
-### 9. Pozostałe pola niezmapowane
+### 10. Pozostałe pola niezmapowane
 
 | Pole | Wartość | Status |
 |------|---------|--------|
+| E4 f[4] | 0x0A | stała dla Nano master, znaczenie nieznane |
 | E5 f[26] | 0x00/0x10/0x50 | "slave_ack" hipoteza, niejednoznaczna |
-| Bit 0 w E4 f[27] | pojawia się tylko Urlop+Wentyl=Manual lub Urlop+Chłodz | nieznana funkcja |
+| Bit 0 w E4 f[27] | pojawia się tylko Urlop+Wentyl=Manual / Urlop+Chłodz | funkcja nieznana |
 
 ---
 
