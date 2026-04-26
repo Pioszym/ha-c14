@@ -7,3 +7,6 @@ packages/
 secrets.yaml
 *.swp
 .DS_Store
+esp02.yaml
+esp02.yaml.bak
+CLAUDE.md

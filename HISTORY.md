@@ -2,6 +2,52 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## Config push do slave id=2 — Test1+Test2 (2026-04-26 22:41-23:29)
+
+Cel: zweryfikować strukturę ramki E4(29) src=0x2A (config push do slave id=2) — czy bajty są pre-cached w EEPROM mastera, czy generowane on-the-fly z bieżących nastaw.
+
+**Setup:** ESP02 w Rola=Slave, VS id=3 włączony (echo'uje pola mastera), Forward ON. Nano master + Nano slave id=2 (fizyczny) na busie.
+
+**Test1 — kontrola bez zmian nastaw:**
+
+Power-cycle Nano mastera bez zmian w menu. Porównanie 2 config push z odstępem 35 min:
+
+```
+22:41:20:  E4,2A,60,29,0D,01,05,28,1C,2A,00,1E,01,17,1E,1E,18,14,00,24,20,21,22,25,24,23,20,01,53,23
+23:16:03:  E4,2A,60,29,0D,01,05,28,1C,2A,00,1E,01,17,1E,1E,18,14,00,24,20,21,22,25,24,23,20,01,53,23
+```
+
+**Bajt-w-bajt identyczne, włącznie z CRC f[2]=0x60.** Stabilność potwierdzona.
+
+**Test2 — zmiana % naw B1: 37→35 w menu Nano serwisowym:**
+
+```
+przed (23:16:03): E4,2A,60,29,0D,01,05,28,1C,2A,00,1E,01,17,1E,1E,18,14,00,24,20,21,22,25,24,23,20,01,53,23
+po (23:28:55):    E4,2A,5E,29,0D,01,05,28,1C,2A,00,1E,01,17,1E,1E,18,14,00,24,20,21,22,23,24,23,20,01,53,23
+                     ↑↑                                                          ↑↑
+                     CRC                                                        f[23]
+                     0x60→0x5E                                                  0x25→0x23
+```
+
+f[23] zmieniło się 0x25→0x23 (37→35) **dokładnie zgodnie ze zmianą w menu**. CRC liniowy: różnica -2 w f[23] → 0x60-2 = 0x5E ✓. Pozostałe pola niezmienione. **f[4-13] mimo zmian w menu = niezmienne** (firmware constanty).
+
+**Wnioski:**
+
+1. **Config push to żywy snapshot** generowany w momencie wysyłki — nie pre-cached config z EEPROM
+2. **f[14-28] = mirror E3(29) src=44 w momencie wysyłki** — slave dostaje aktualne nastawy mastera
+3. **f[4-13] = firmware constanty** (`0D,01,05,28,1C,2A,00,1E,01,17`) — niezmienne między sesjami i niezależne od nastaw user. Pewnie identyfikator firmware lub kalibracja AERO której user nie modyfikuje
+4. **Stara hipoteza** (PROTOCOL.md historyczny tabela) "f[14-15]=T setpoint" była **błędna** — różnice między sesją 2026-04-23 a obecną wynikały z innych nastaw user, nie z innego znaczenia bajtów
+
+**Lekcja debugowania:** porównywanie pojedynczego config push z różnych sesji bez kontroli nastaw mastera prowadziło do błędnych hipotez (każda zmiana nastawy w menu = inny config push). Test parami (no-change vs change) izolował co jest stałe a co zmienne.
+
+## Side observation: AERO 162s milczenia po power-on Nano (2026-04-26)
+
+Powtarzalne w obu power-cycle Test1/Test2: Nano master po power-on zaczyna nadawać E3(29) src=44 (query do AERO) zaraz, ale AERO przez **162-180 sekund nie odpowiada** — w logu ESP cisza po stronie uart_aero. Dopiero po ~3min pierwsza ramka E4(63) (czasem z desync prefiksem `0x23`).
+
+Hipoteza: power-cycle Nano przerywa bus przez ESP MITM (HW-0519 idą w hi-Z), AERO wykrywa "bus down", przechodzi w resync mode z wewnętrznym watchdogiem ~3min. Wcześniejsze sesje (przed Forward auto-on) prawdopodobnie miały ten sam objaw, ale nie był testowany systematycznie — nieobserwowany bo zmiany nastaw + pomiary robiło się bez reboot Nano.
+
+Wcześniejszy bug w ESP forward (warunki `&& !g_master_on` + `g_forward_on=false` default) został naprawiony 2026-04-26 — auto-on Forward w Rola=Slave + ESP TX zawsze na oba uarty (filozofia "ESP = przezroczysty most").
+
 ## Test slave id=2 → id=3 (2026-04-24)
 
 **Setup:** Nano slave jako id=2 (f[3]=0x2A), zmieniono id=3 (f[3]=0x2B) na wyświetlaczu + power cycle. ESP master z `g_slave_ack=true` wysyłający E5(29) f[26]=0x50.

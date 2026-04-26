@@ -78,7 +78,7 @@ Rozszerzona wersja Mini (TRYB W SIECI C14 = MASTER w menu serwisowym Nano). Doda
 | — | E4(29) src=0x21 f[3]=0x2C | **Slave id=4** | Odpowiedź slave id=4 |
 | 27 | AC(29) src=0x56 | Master | iNEXT slot dla id=4 |
 
-**Wake-upy dla id ≥ 5:** wzór protokołu (`f[0]=0xA8+id`) sugeruje rozszerzenie do `BC` (id=20), ale w obserwowanym Nano master nadawanie wake-up'ów dla id ≥ 5 **nie zostało zaobserwowane** — prawdopodobnie wymaga rejestracji slave w menu mastera (procedura nieznana).
+**Wake-upy dla id ≥ 5:** wzór protokołu (`f[0]=0xA8+id`) sugeruje rozszerzenie do `BC` (id=20) — protokół teoretycznie obsługuje 19 slave'ów (id 2..20, master zawsze 1). W obserwowanym Nano master wake-upy dla id ≥ 5 **nie zostały zaobserwowane**. W menu serwisowym Nano nie ma ustawienia "lista slave'ów" — master ustala "kogo budzić" prawdopodobnie auto-detect z bus traffic (kryterium nieznane), albo Master Full ma stałą długość = 3 slave'ów (id=2-4).
 
 **Zdarzenia asynchroniczne (poza cyklem master):**
 
@@ -542,41 +542,46 @@ Po wykryciu 80(2X) Nano master odpowiada **w następnym cyklu** ramką E4(29) sr
 
 #### E4(29) src=0x2X — config push do slave id=X
 
-Obserwacja 2026-04-23: ~16s po power-on Nano slave id=2, master **jednorazowo** wysyła E4(29) z `f[1]=0x2A` zamiast standardowego `0x21` — na pozycji #1 cyklu Master Full.
+~23s po power-on Nano mastera, master **jednorazowo** wysyła E4(29) z `f[1]=0x2X` zamiast standardowego `0x21` — między pozycją #27 (AC src=56) a #1 nowego cyklu Master Full (NIE na pozycji #1 jak wcześniej notowano).
 
 ```
-E4,2A,[cks],29,0D,01,05,28,1C,2A,00,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B,20,01,[BIEG],23
+E4,2X,[cks],29,[FW_const ×10],[E3_copy_f14-28],23
+       f[2]                    f[14-28] = mirror aktualnego E3(29) src=44
+       CRC
 ```
 
-- **f[1] = 0x2A** — adresowanie do slave id=2 (nie `0x21`!)
-- f[3] = `0x29` (master-side subtype)
-- f[4-13] = obserwowane stałe między power cycles na id=2; **wymaga ponownej weryfikacji** z dzisiejszą wiedzą (data jest w f[25-26], być może inne pola też kodują rzeczy które przeoczyliśmy)
-- f[14-27] = wartości jak w E3(29)_44 query (% per bieg, parametry)
-- f[28] = kod biegu (`0x53` gdy harmonogram B1, `0x13` gdy manual B1)
+**Struktura ramki (zweryfikowana 2026-04-26 testem Test1+Test2):**
 
-Porównanie payload E4(29) src=0x21 vs src=0x2X (dane historyczne 2026-04-23):
+| Bajty | Zawartość | Zachowanie |
+|-------|-----------|------------|
+| f[0] = `0xE4` | typ ramki | stałe |
+| f[1] = `0x2X` | adresat: `0x2A`=id=2, `0x2B`=id=3, ... | per-id |
+| f[2] | CRC (K=0xA3) | sumaryczne dla całości |
+| f[3] = `0x29` | subtyp master | stałe |
+| **f[4-13]** | `0D,01,05,28,1C,2A,00,1E,01,17` | **firmware constanty** — niezmienne między sesjami i niezależne od nastaw user (kalibracja AERO? wersja protokołu? id firmware?) |
+| **f[14-28]** | **kopia 1:1 z E3(29) src=44 f[14-28] w momencie wysyłki** | mirror aktualnych % per bieg + parametry |
+| f[29] = `0x23` | terminator | stałe |
 
-| f[i] | src=0x21 (broadcast) | src=0x2X (config push) |
-|------|----------------------|------------------------|
-| 4 | `0x0A` | `0x0D` |
-| 5 | `0x40/0x44` | `0x01` |
-| 6 | `0x00` | `0x05` |
-| 7 | `0x03` (dow) | `0x28` |
-| 8-9 | zegar | `0x1C, 0x2A` (stałe?) |
-| 10-11 | `0x7E,0x00` | `0x00, 0x1E` |
-| 12-13 | T pokoj | `0x01, 0x17` |
-| 14-15 | T setpoint | `0x5F, 0x64` |
-| 16-22 | `0x7E` filler | wypełnione różnymi danymi |
-| 24 | `0x64` (mocy) | `0x4B` |
-| 25-26 | rotator daty (3 fazy) | `0x20, 0x01` |
-| 28 | flag\|bieg | `0x53` |
+**Test1 (2026-04-26, bez zmian nastaw mastera):**
+- Power-cycle Nano mastera bez zmian w menu
+- Config push 22:41:20 vs 23:16:03 (po 35min) → **bajt-w-bajt identyczne** włącznie z CRC
+- Potwierdza stabilność f[4-13] i mirror f[14-28]
 
-Config push to **całkowicie inny zestaw danych** — konfiguracja systemu (sezon, harmonogram, setpointy globalne, kalibracja AERO). Slave ma to absorbować do EEPROM.
+**Test2 (2026-04-26, zmiana % naw B1: 37→35 w menu Nano):**
+- Przed power-cycle: w menu Nano `% Nawiew B1` zmieniony 37→35
+- Po power-on: config push 23:28:55 ma `f[23]=0x23` (35) zamiast `0x25` (37) z poprzedniego push
+- CRC f[2] poprawnie skompensowała: 0x60-2 = 0x5E (różnica = -2 w f[23])
+- Pozostałe f[14-28] niezmienione (bo zmieniono tylko jedną wartość)
+- **f[4-13] niezmienione** mimo że nastawy w menu inne — potwierdza że to firmware constanty, nie user data
 
-**Ograniczenia obserwacji (do sprawdzenia):**
-- Potwierdzone tylko dla **id=2** (Nano slave fizyczny). Symulowane VS slaves id=2-4 też obserwowały config push tylko dla id=2 — Nano master prawdopodobnie ma w EEPROM listę "zarejestrowanych" slave'ów i wysyła config push tylko do nich. Hipoteza: nasze VS nie przeszły pełnej rejestracji (procedura nieznana, prawdopodobnie wymaga sekwencji handshake której nie odtwarzamy lub manualnego dodania w menu mastera) — stąd brak config push do id=3/4 mimo że symulowaliśmy 80 boot.
-- Dla id ≥ 5: **brak obserwacji** ani odpowiedzi mastera. Nano master nie ma wake-up AD/AE itd. wg cyklu Master Full — albo i tej rejestracji wymaga, albo cykl Master Full obsługuje max 3 slave'ów (id=2-4).
-- Wartości w tabeli powyżej z sesji 2026-04-23 — przed odkryciem 3-fazowej daty w f[25-26]. Niektóre "stałe" mogą być w rzeczywistości fazami transmisji innych danych.
+**Wnioski:**
+- Config push to **żywy snapshot** generowany w momencie wysyłki, nie pre-cache z EEPROM mastera. Slave dostaje aktualne ustawienia, nie te z momentu rejestracji.
+- f[4-13] to "tożsamość mastera" (10 bajtów stałych) — slave może ich używać do walidacji/identyfikacji
+- f[14-28] to po prostu broadcast E3(29) src=44 zapakowany w "personalną" ramkę dla slave (redundancja + adresowanie)
+
+**Ograniczenia obserwacji:**
+- Potwierdzone tylko dla **id=2** (Nano slave fizyczny). Symulowane VS slaves id=3/4 odpowiadały na wake-up AB/AC pełnym echo'em pól mastera (rotator daty, dow, zegar, setpoint, tryb, bieg z sync flag), ale Nano master **nie wysyłał do nich config push**. Mechanizm rozpoznania "real slave" przez Nano mastera nieznany — w menu serwisowym Nano nie ma ustawienia "lista zarejestrowanych slave'ów" (jest tylko własne ID Nano 1..20, master zawsze 1, slaves 2-20). Możliwe że master kwalifikuje slave'a po jakimś kryterium w treści odpowiedzi E4(2X) którego nasze VS nie spełniają.
+- Dla id ≥ 5: **brak obserwacji** ani odpowiedzi mastera. Nano master nie ma wake-up AD/AE itd. wg cyklu Master Full — albo cykl Master Full obsługuje max 3 slave'ów (id=2-4), albo wake-upy dla wyższych id pojawiają się dopiero po spełnieniu kryterium rozpoznania.
 
 ---
 
@@ -770,8 +775,9 @@ Wpływa na f[3] we wszystkich ramkach wysyłanych przez Nano: `f[3] = 0x28 + id`
 6. **Co dokładnie przełącza slave w stan synced (f[28] bit `0x40`)?** ESP master wysyła wake-up + config push E4(29) src=0x2X, ale slave dalej w trybie unsynced. Brakuje prawdopodobnie specyficznej sekwencji handshake (per-id D0/D1? specjalne pole "accept" w E4 src=0x2X?).
 7. **Rola src=0x56 wake-up'ów (AA/AB/AC,56)** — inny kanał, inny CRC, payload `0x00`. Hipoteza: osobny bus dla EX4/iNEXT.
 8. **f[7] w E4 od slave** (`0x02`/`0x03`) — stałe w sesji, zmienia się między sesjami. Może model firmware, liczba urządzeń, tryb pracy Nano.
-9. **Jak Nano master dodaje slave do listy wake-up'ów?** 80 boot NIE wystarcza (empirycznie). Prawdopodobnie rejestracja przez menu UI mastera.
+9. **Jak Nano master "rozpoznaje" slave id≥3 i wysyła do niego config push?** 80 boot NIE wystarcza, pełne echo wszystkich pól mastera w E4(2X) także NIE wystarcza (zweryfikowane 2026-04-26 z VS-3). W menu Nano serwisowym nie ma ustawienia "lista slave'ów" — auto-detect, ale kryterium nieznane. Może wymaga obserwacji slave'a przez N pełnych cykli rotatora daty (3 fazy × M powtórzeń), albo specyficznego pola/flagi w E4(2X) którego brakuje.
 10. **f[4-13] w E4(29) src=0x2X** (config push) — stałe między power cycles, nie zawierają daty/zegara. Co dokładnie kodują? (sezon, harmonogram tygodniowy, setpointy, kalibracja AERO?)
+11. **Hipoteza "łańcuch slave'ów" (do zbadania)** — może slave id=2 (fizyczny) pełni rolę "rejestratora" dla id=3+? Master nadaje config push tylko do id=2 bezwarunkowo, slave id=2 mógłby retransmitować informacje o nowych slave'ach (id=3, 4...) do mastera w specjalnej ramce której nie znamy. Wake-upy AA/AB/AC w cyklu mastera nie pasują do tego modelu (master nadaje je sam, nie przez id=2) — chyba że są stałą częścią cyklu firmware niezależną od rejestracji. Test wymagałby drugiego fizycznego Nano slave'a (nie VS) na busie.
 
 ### Niezweryfikowane historyczne hipotezy (do sprawdzenia)
 
