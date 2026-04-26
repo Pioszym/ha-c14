@@ -9,8 +9,13 @@ Reverse engineering magistrali RS-485 między rekuperatorem **COMPIT AERO 3B** a
 - Magistrala: RS-485, 9600 8N1, terminator 0x23
 - Wszystkie ramki **30 bajtów** (f[0]..f[29]), f[29] = terminator `0x23`
 - Padding: `0x7E` = puste pole
-- Master: Nano Color CTP (tryb **MASTER MINI** — 11 ramek/cykl ~8.5s)
-- Slave główny: AERO 3B (odpowiada tylko na trigger)
+
+**Urządzenia w systemie:**
+- **COMPIT AERO 3B** — rekuperator (odpowiada na trigger E3(29) src=44 ramką E4(29) src=63)
+- **COMPIT Nano Color CTP** — panel pokojowy; **rola konfigurowalna w menu**:
+  - **Master id=1** — w 2 trybach pracy: **Master Mini** (10 ramek/cykl ~8.5s) lub **Master Full** (27 ramek/cykl ~22s)
+  - **Slave id=2..20** — odpowiada na wake-up od mastera (cyclic E4(2X) src=21)
+- W cyklu Master Mini/Full liczba ramek MASTER + 1 ramka odpowiedzi AERO E4(63) wlicza się do tego co widzi sniffer na busie (np. 10 TX master + 1 RX AERO = 11 ramek na busie)
 
 ### Uwagi o RS-485 transceiverach
 
@@ -87,7 +92,7 @@ Przykłady: `11,36` = 23.0°C · `11,40` = 24.0°C · `11,04` = 18.0°C · `10,6
 
 ## Cykle master
 
-### Master Mini (11 ramek, ~8.5s) — obserwowane
+### Master Mini (10 ramek master + 1 AERO, ~8.5s) — obserwowane
 
 Sekwencja Master Mini: komenda biegu najpierw, trigger QUERY zaraz po, potem reszta broadcastów.
 
@@ -107,7 +112,7 @@ Sekwencja Master Mini: komenda biegu najpierw, trigger QUERY zaraz po, potem res
 
 Uwaga: w Master Mini Nano slave jest **cichy** — nie odpowiada na żadną ramkę. Dla aktywacji slave potrzebna AA(29) src=0x44 z Master Full.
 
-### Master Full (27 ramek, ~22s) — obserwowane
+### Master Full (27 ramek master + 2 AERO, ~22s) — obserwowane
 
 Master Full to rozszerzona wersja Mini, aktywowana w menu serwisowym Nano (TRYB W SIECI C14 = MASTER). Dodaje 17 ramek enumeration/keepalive dla rzadkich slave ID. **E3(29)_44 występuje DWA razy w cyklu** — AERO odpowiada E4(63) dwukrotnie per cykl (~10s + ~13s split).
 
