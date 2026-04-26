@@ -65,3 +65,15 @@ Nano OFF 18:41:30 (VS2 ON + VS3 ON)
 Nano ON 18:42:24
 Nano OFF 18:47:57 (test: VS2/3 OFF na busie pusto)
 Nano ON 18:48:29 (slave OFF, czysty bus)
+=== Test unsynced VS template 19:14:12 ===
+VS2 ON 19:34:47 (unsynced template)
+VS2 ON 19:38:34 (unsynced)
+=== Test Nano slave menu mapping 21:30:46 ===
+Termostat urlop 21:35:30
+Termostat manual 21:37:16
+Manual config push id=2 21:53:07
+Nano slave OFF 21:56:00
+Nano slave ON 21:56:37
+Manual 22→25 22:27:53
+Nano master OFF 22:36:14 (manual=25 ustawione w menu)
+Nano master ON 22:37:21 (manual=25)
