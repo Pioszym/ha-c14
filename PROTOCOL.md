@@ -550,28 +550,33 @@ E4,2A,[cks],29,0D,01,05,28,1C,2A,00,1E,01,17,5F,64,18,14,00,24,20,28,46,25,2D,4B
 
 - **f[1] = 0x2A** — adresowanie do slave id=2 (nie `0x21`!)
 - f[3] = `0x29` (master-side subtype)
-- f[4-13] = stałe między power cycles, **NIE zawierają daty** (weryfikowane 2026-04-23)
-- f[14-27] = identyczne jak w E3(29)_44 query (% per bieg, parametry config)
+- f[4-13] = obserwowane stałe między power cycles na id=2; **wymaga ponownej weryfikacji** z dzisiejszą wiedzą (data jest w f[25-26], być może inne pola też kodują rzeczy które przeoczyliśmy)
+- f[14-27] = wartości jak w E3(29)_44 query (% per bieg, parametry)
 - f[28] = kod biegu (`0x53` gdy harmonogram B1, `0x13` gdy manual B1)
 
-Porównanie payload E4(29) src=0x21 vs src=0x2X:
+Porównanie payload E4(29) src=0x21 vs src=0x2X (dane historyczne 2026-04-23):
 
 | f[i] | src=0x21 (broadcast) | src=0x2X (config push) |
 |------|----------------------|------------------------|
 | 4 | `0x0A` | `0x0D` |
-| 5 | `0x40` | `0x01` |
+| 5 | `0x40/0x44` | `0x01` |
 | 6 | `0x00` | `0x05` |
-| 7 | `0x03` | `0x28` |
-| 8-9 | zegar | `0x1C, 0x2A` (stałe) |
+| 7 | `0x03` (dow) | `0x28` |
+| 8-9 | zegar | `0x1C, 0x2A` (stałe?) |
 | 10-11 | `0x7E,0x00` | `0x00, 0x1E` |
 | 12-13 | T pokoj | `0x01, 0x17` |
 | 14-15 | T setpoint | `0x5F, 0x64` |
 | 16-22 | `0x7E` filler | wypełnione różnymi danymi |
 | 24 | `0x64` (mocy) | `0x4B` |
-| 25 | rotator daty | `0x20` |
+| 25-26 | rotator daty (3 fazy) | `0x20, 0x01` |
 | 28 | flag\|bieg | `0x53` |
 
 Config push to **całkowicie inny zestaw danych** — konfiguracja systemu (sezon, harmonogram, setpointy globalne, kalibracja AERO). Slave ma to absorbować do EEPROM.
+
+**Ograniczenia obserwacji (do sprawdzenia):**
+- Potwierdzone tylko dla **id=2** (Nano slave fizyczny). Symulowane VS slaves id=2-4 też obserwowały config push tylko dla id=2 — Nano master prawdopodobnie ma w EEPROM listę "zarejestrowanych" slave'ów i wysyła config push tylko do nich. Hipoteza: nasze VS nie przeszły pełnej rejestracji (procedura nieznana, prawdopodobnie wymaga sekwencji handshake której nie odtwarzamy lub manualnego dodania w menu mastera) — stąd brak config push do id=3/4 mimo że symulowaliśmy 80 boot.
+- Dla id ≥ 5: **brak obserwacji** ani odpowiedzi mastera. Nano master nie ma wake-up AD/AE itd. wg cyklu Master Full — albo i tej rejestracji wymaga, albo cykl Master Full obsługuje max 3 slave'ów (id=2-4).
+- Wartości w tabeli powyżej z sesji 2026-04-23 — przed odkryciem 3-fazowej daty w f[25-26]. Niektóre "stałe" mogą być w rzeczywistości fazami transmisji innych danych.
 
 ---
 
