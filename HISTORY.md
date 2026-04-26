@@ -428,3 +428,74 @@ Sprawdzone wszystkie 27 ramek Master Full — pozostałe 25 (oprócz E4(29) i E5
 - **Rotator E4(29) f[25-26]** c=3 — obserwowane `0x0E`/`0x0F`/`0x13` w różnych sytuacjach
 - **E5(29) f[28]** — pełny enum kodów UI Nano (wyjściowe `0x00/01/03/05/16/18/19`, brak wzoru)
 - **Cold-start handshake** — czy istnieje sekwencja inicjalizacyjna przy starcie AERO? ESP-master jej nie robi i działa, ale to może być powód wcześniejszych niestabilności.
+
+---
+
+## 2026-04-26: Test 12-krokowy menu Nano (Wentylacja / Termostat / Programy)
+
+Systematyczny test wszystkich pozycji 3 menu w Nano master, każda zmiana weryfikowana na 4-5 cyklach Master Full. Sezon=Zima, schedule (eco=B1 początkowo, później eco=B2; poza-domem=Stop).
+
+### Test A — Wentylacja (Term=Manual stały, Prog=Normal):
+
+| Wentylacja | f[28] | f[24] |
+|-----------|-------|-------|
+| Manual Stop | `0x41` | `0x64` |
+| Manual B1 | `0x43` | `0x64` |
+| Manual B2 | `0x45` | `0x64` |
+| Manual B3 | `0x47` | `0x64` |
+| Harmonogram (slot=B1) | `0x43` (== Manual B1) | `0x64` |
+| Harm-Urlop (slot=B1) | `0x03` (== B1 bez stable) | `0x32` |
+| Harm-Urlop (slot=B2 po edycji harm) | `0x05` | `0x32` |
+
+**Odkrycia:**
+- Wentylacja=Harmonogram protokołowo identyczne z Manual+slot_bieg (slave nie odróżni)
+- Wentylacja=Harm-Urlop też rotuje wg harmonogramu (zmiana eco→B2 natychmiast zmieniła `f[28]` z `0x03`→`0x05`)
+- Harm-Urlop różni się od Manual jedynie brakiem bitu `0x40` w f[28] + `f[24]=0x32`
+
+### Test B — Termostat (Went=Manual B1, Prog=Normal):
+
+| Termostat | f[27] bity 0-1 | f[14-15] | f[28] | f[24] |
+|-----------|----------------|----------|-------|-------|
+| Manual | `0x02` | 25°C (Manual setpoint) | `0x43` (B1+stable) | `0x64` |
+| Harmonogram | `0x00` | 21°C (eco_zima) | `0x03` (no stable) | `0x32` |
+| Urlop | **`0x01`** | 21°C (eco_zima, jak Harm) | `0x03` (no stable) | `0x32` |
+
+**Odkrycia:**
+- **Termostat=Urlop ma własny kod `0x01`** w f[27] bity 0-1. Wcześniejsza hipoteza (HISTORY 2026-04-25) "Urlop=Harm protokołowo identyczne, oba `0x00`" była **błędna** — bazowała na nieczystym teście (Nano w trybie slave ze starym EEPROM).
+- Bit `0x40` w f[28] + `f[24]=0x64` = flaga **Termostat=Manual** (CLEAR dla Harm/Urlop). Wcześniejsza hipoteza "stable=Manual+Zima" była zbliżona, ale Sezon nie jest niezbędny.
+- Setpoint Term=Urlop+Zima = eco_zima (21°C, taki sam jak Harm) — Nano nie zmienia setpointu między Harm a Urlop. Wcześniejsza hipoteza "Urlop+Zima → poza_domem" była błędna.
+
+### Test C — Programy (Term=Manual, Went=Manual B1, schedule poza-dom=Stop):
+
+| Program | f[5] | f[14-15] | f[28] |
+|---------|------|----------|-------|
+| Normal | `0x40` | 25°C (wg Termostatu) | `0x43` (Manual B1+stable) |
+| Poza domem | **`0x44`** (bit `0x04` SET) | **20°C (poza_domem)** | **`0x41`** (Stop ze slotu poza-dom!) |
+| Urlop | `0x40` | 20°C (poza_domem) | **`0x40`** (validity=0, bieg=0) |
+
+**Odkrycia:**
+- Bit `0x04` w f[5] = **"Programy=Poza domem aktywne"** (NIE "harmonogram aktywny" jak doc wcześniej). Aktywny tylko w Poza domem; Normal i Urlop → CLEAR.
+- Programy=Poza domem ≠ Programy=Normal **protokołowo różne** (wcześniejsza hipoteza "identyczne, override lokalnie" była błędna): bieg, setpoint i `f[5]` różne.
+- Programy=Urlop daje `f[28]=0x40` (validity=0, sam bit stable). Wcześniejszy doc mówił `f[28]=0x02` — błąd.
+- Programy nadpisują Wentylacja menu (Wentylacja=Manual B1, ale w Poza domem `f[28]` pokazuje slot poza-domem = Stop).
+- Programy nadpisują setpoint Termostatu (Term=Manual 25°C, ale w Poza domem/Urlop f[14-15]=20°C poza_domem).
+
+### Programy=Urlop vs Wentylacja=Harm-Urlop — różne mechanizmy:
+
+| | Programy=Urlop | Wentylacja=Harm-Urlop |
+|----|----------------|------------------------|
+| f[28] | `0x40` (validity=0) | bieg z slotu, bez `0x40` |
+| f[24] | wg Termostatu | `0x32` |
+| f[5] bit `0x04` | CLEAR | bez wpływu |
+| Setpoint | poza_domem (override) | wg Termostatu |
+
+Programy=Urlop = "wyłącz wentylację". Wentylacja=Harm-Urlop = "tryb minimalny, ale rotuj harmonogram".
+
+### Korekty PROTOCOL.md po teście:
+- §3.2 f[27] bity 0-1: dodany `0x01`=Urlop
+- §3.2 f[28]: bit `0x40` = "Termostat=Manual" (NIE "stable Manual+Zima")
+- §3.2 f[28]: `0x02` usunięte z opisu Urlop (faktycznie `0x40` dla Programy=Urlop)
+- §3.2 f[5] bit `0x04`: "Poza domem aktywne" (NIE "harmonogram aktywny")
+- §4.1 Termostat: Urlop ma własny kod
+- §4.3 Wentylacja: 6 opcji rozszyfrowane
+- §4.5 Programy: pełna tabela 3 stanów

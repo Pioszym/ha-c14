@@ -197,7 +197,7 @@ E4,21,[cks],29,[F4],[F5],00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],
 | f[2] | zmienne | checksum (K=0xA3) | KNOWN |
 | f[3] | `0x29` | subtyp (master id=1) | KNOWN |
 | f[4] | `0x0A` | stała Nano master (model? wersja?) | UNKNOWN |
-| f[5] | `0x40/0x44` | Bit `0x04` = "harmonogram aktywny" (Normal/Poza domem). Bit `0x40` = AERO_OK (set gdy AERO odpowiada). | KNOWN |
+| f[5] | `0x40/0x44` | Bit `0x04` = "Programy=Poza domem aktywne". Bit `0x40` = AERO_OK (set gdy AERO odpowiada). | KNOWN |
 | f[6] | `0x00` | stałe | UNKNOWN |
 | f[7] | 0-6 | **Day of week** (`0=Pn..6=Nd`) | KNOWN |
 | f[8] | 0-23 | **Godzina** (decimal jako byte) | KNOWN |
@@ -228,21 +228,17 @@ Slave rekonstruuje pełną datę po 3 cyklach (~66s).
 
 **f[27] — multi-field encoding:**
 
-Jeden bajt koduje 3 niezależne wymiary stanu:
-
 | Bity | Pole | Wartości |
 |------|------|----------|
-| 0-1 | Tryb sterowania temperaturą | `0x00`=Harmonogram lub Urlop · `0x02`=Manual |
-| 3-4 | Sezon | `0x00`=Zima · `0x08`=Lato bez · `0x10`=Chłodzenie |
+| 0-1 | Tryb termostatu | `0x00`=Harmonogram · `0x01`=Urlop · `0x02`=Manual |
+| 3-4 | Sezon | `0x00`=Zima · `0x08`=Lato bez ogrzewania · `0x10`=Chłodzenie |
 | 5 | Wietrzenie overlay | `+0x20` gdy ON |
 
 Łączne: `f[27] = tryb_temp | sezon | wietrzenie_overlay`.
 
-**Uwaga (zweryfikowane 2026-04-25):** Urlop **NIE ma własnego kodu** w f[27] — używa `0x00` jak Harmonogram. Wcześniejsza hipoteza `0x01 = Urlop` była błędna (obserwowana tylko gdy Nano był slave ze starym EEPROM). Różnicę Urlop vs Harmonogram widać tylko na wyświetlaczu Nano (kieliszek + zegarek vs sam zegarek) — protokołowo identyczne. Urlop = "harmonogram z stałym setpointem poza_domem".
-
 **f[28] — bieg + flagi:**
 
-Bit 0 = validity flag (zawsze SET dla normalnych biegów), bity 1-2 = value biegu:
+Bit 0 = validity, bity 1-2 = value biegu:
 
 | Bieg | f[28] (bez overlays) |
 |------|---------------------|
@@ -251,19 +247,24 @@ Bit 0 = validity flag (zawsze SET dla normalnych biegów), bity 1-2 = value bieg
 | B2 | `0x05` |
 | B3 | `0x07` |
 
-Overlays:
-- `+0x08` (bit 3) = chłodzenie aktywne (manual B1+cool = `0x0B`)
-- `+0x40` (bit 6) = **STABLE CONFIG flag** (paruje z `f[24]=0x64`)
-- `0x02` = specjalny kod "URLOP / zatrzymaj komendę biegu" (bit validity = 0)
+Overlays / specjalne wartości:
+- `+0x08` (bit 3) = chłodzenie aktywne (B1+cool = `0x0B`)
+- `+0x40` (bit 6) = flaga **"Termostat=Manual"** (paruje z `f[24]=0x64`; Harm/Urlop → bit CLEAR + `f[24]=0x32`)
+- `0x40` sam (validity=0, bieg=0) = **Programy=Urlop**
 
-**Bit 0x40 ("stable config") — empirycznie 2026-04-25:**
-- Manual + Zima → bit 0x40 SET (np. `0x43` dla B1) + `f[24]=0x64`
-- Harmonogram/Urlop + Zima → bit 0x40 CLEAR (np. `0x03`) + `f[24]=0x32`
-- Lato/Chłodzenie (dowolny tryb) → bit 0x40 CLEAR + `f[24]=0x32`
+AERO reaguje mechanicznie tylko na bity 1-2. Bity `0x40` i `0x08` ignoruje — to flagi dla slaves.
 
-Wniosek: bit `0x40` = master ma jednoznaczny, niezmienny w czasie setpoint do narzucenia slave. Przy Harmonogramie setpoint zmienia się dynamicznie → bit znika.
+**Wpływ menu Nano na f[28]:**
 
-AERO reaguje mechanicznie **tylko na bity 1-2** (value biegu). Bit `0x40` i `0x08` ignoruje przy decyzji o prędkości — to flagi dla slaves.
+| Stan | f[28] |
+|------|-------|
+| Wentylacja=Stop/B1/B2/B3 (manual) | `bieg \| 0x40` jeśli Term=Manual, inaczej sam `bieg` |
+| Wentylacja=Harmonogram | identyczne jak Manual+bieg_z_slotu (slave nie odróżni) |
+| Wentylacja=Harm-Urlop | bieg z slotu, bez `0x40`, `f[24]=0x32` |
+| Programy=Poza domem | bieg z slotu poza-domem (override) + `f[5]` bit `0x04` SET, setpoint=poza_domem |
+| Programy=Urlop | `0x40`, setpoint=poza_domem |
+
+Programy aktywne nadpisują Wentylacja menu.
 
 ### 3.3 E3(29) src=0x44 — QUERY / TRIGGER AERO (cykl #2 i #14)
 
@@ -299,7 +300,7 @@ E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,[WIET_WYW],[WIET_NAW],18,14,00,[B1_
 | Sezon | E3 f[27] |
 |-------|----------|
 | Zima | `0x01` |
-| Lato bez | `0x09` |
+| Lato bez ogrzewania | `0x09` |
 | Chłodzenie | `0x11` |
 
 Bit 0 (`0x01`) zawsze SET, bity 3-4 = sezon (`0x08` lato, `0x10` chłodz). Tryb termostatu **nie** wpływa na E3 f[27]. Bit 5 (`0x20`) = wietrzenie ON (jak E4).
@@ -368,7 +369,7 @@ E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECZ_H],[ECZ_L],[ECL_H],[ECL_
 | f[6-7] | HH,LL | **T.Czerpnia** (kopia z AERO E4(63), NIE sensor pokojowy) | KNOWN |
 | f[8-9] | HH,LL | **Comfort** setpoint | KNOWN |
 | f[10-11] | HH,LL | **Eco zima** setpoint (aktywny gdy sezon=Zima) | KNOWN |
-| f[12-13] | HH,LL | **Eco lato/chłodzenie** setpoint (aktywny gdy sezon=Lato/Chłodz) | KNOWN |
+| f[12-13] | HH,LL | **Eco chłodzenie** setpoint (aktywny gdy sezon=Lato/Chłodz) | KNOWN |
 | f[14-15] | HH,LL | **Manual / zadana ręczna** setpoint | KNOWN |
 | f[16-17] | HH,LL | **Poza domem** setpoint (Urlop+Zima, Poza domem) | KNOWN |
 | f[18] | `0x00` | stałe | UNKNOWN |
@@ -387,16 +388,16 @@ E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECZ_H],[ECZ_L],[ECL_H],[ECL_
 
 | Kod | Stan | AERO reakcja |
 |-----|------|--------------|
-| `0x60` | Manual OFF | Zamyka natychmiast (E4(63) f[28] = `0x40`) |
+| `0x60` | OFF | Zamyka natychmiast (E4(63) f[28] = `0x40`) |
 | `0x61` | AUTO | Decyduje autonomicznie |
-| `0x62` | Manual ON | Otwiera natychmiast (E4(63) f[28] = `0x60`) |
+| `0x62` | ON | Otwiera natychmiast (E4(63) f[28] = `0x60`) |
 
 **f[27] — Sezon (3-stanowy enum, mapowanie różne od E4 i E3):**
 
 | Kod | Sezon |
 |-----|-------|
 | `0x00` | Zima ogrzewanie |
-| `0x0A` | Lato bez |
+| `0x0A` | Lato bez ogrzewania |
 | `0x14` | Chłodzenie |
 
 **f[28] — Kod UI (PARTIAL, niejednolite, zależy od ścieżki nawigacji):**
@@ -567,20 +568,22 @@ Ten dział to indeks: gdzie w protokole znajduje się dane ustawienie z menu Nan
 
 | Ustawienie | Lokalizacja | Wartość |
 |------------|-------------|---------|
-| Tryb temp | E4 f[27] bity 0-1 (§3.2) | `0x00`=Harm/Urlop · `0x02`=Manual |
-| Aktywny setpoint (kopia) | E4 f[14-15] (§3.2) | wybór z 5 setpointów E5 |
-| Stable flag (Manual+Zima) | E4 f[28] bit `0x40` + f[24]=`0x64` (§3.2) | — |
+| Tryb temp | E4 f[27] bity 0-1 (§3.2) | `0x00`=Harm · `0x01`=Urlop · `0x02`=Manual |
+| Aktywny setpoint (kopia) | E4 f[14-15] (§3.2) | Manual=25°C; Harm/Urlop+Zima=eco_zima (21°C) |
+| Manual flag | E4 f[28] bit `0x40` + f[24]=`0x64` (§3.2) | SET dla Manual, CLEAR dla Harm/Urlop |
 
-Urlop ≠ Harmonogram protokołowo identyczne (oba `0x00`). Różnica tylko na wyświetlaczu Nano.
+Setpoint Term=Urlop+Zima = eco_zima (taki sam jak Harm) — różnica widoczna tylko przez `f[27]` bit 0 + ikonę na wyświetlaczu (kieliszek + zegarek vs sam zegarek).
 
-### 4.2 Sezon (Zima / Lato bez / Chłodzenie)
+**Uwaga:** Termostat-Harmonogram (kiedy comfort/eco) to **inny harmonogram** niż Wentylacja-Harmonogram (§4.3, biegi). Sam harmonogram trzymany w EEPROM Nano — sygnalizacja zmian slotów w protokole nieznana (patrz §6).
+
+### 4.2 Sezon (Zima / Lato bez ogrzewania / Chłodzenie)
 
 Sezon jest kodowany różnie w 3 ramkach:
 
 | Sezon | E4 f[27] bity 3-4 (§3.2) | E5 f[27] (§3.7) | E3 f[27] (§3.3) |
 |-------|--------------------------|-----------------|------------------|
 | Zima | `0x00` | `0x00` | `0x01` |
-| Lato bez | `0x08` | `0x0A` | `0x09` |
+| Lato bez ogrzewania | `0x08` | `0x0A` | `0x09` |
 | Chłodzenie | `0x10` | `0x14` | `0x11` |
 
 Chłodzenie aktywuje też overlay `+0x08` w E4 f[28].
@@ -596,7 +599,17 @@ Chłodzenie aktywuje też overlay `+0x08` w E4 f[28].
 
 E5 f[28] = "kod UI" zależny od (Termostat × Sezon × Bieg) — nie czysty enum biegu, patrz §3.7.
 
-6 opcji UI Nano (Harmonogram / Harm-Urlop / B3 / B2 / B1 / Stop) — różnica Harmonogram vs Manual realizowana przez `f[27]` bity 0-1, nie przez sam bieg.
+**Menu Wentylacja** w Nano ma 6 opcji: Harmonogram / Harm-Urlop / B3 / B2 / B1 / Stop.
+
+| Wentylacja | f[28] | f[24] |
+|-----------|-------|-------|
+| Stop / B1 / B2 / B3 (manual) | `0x41` / `0x43` / `0x45` / `0x47` (z `0x40` jeśli Term=Manual) | wg Termostatu |
+| Harmonogram | bieg z aktualnego slotu, identyczne jak Manual+bieg_slotu (slave nie odróżni) | wg Termostatu |
+| Harm-Urlop | bieg z slotu, BEZ bitu `0x40` | `0x32` |
+
+Wentylacja-Harm-Urlop też rotuje wg harmonogramu (zmienia `f[28]` z `0x03`→`0x05` przy zmianie slotu eco z B1→B2). Różni się od Manual/Harm tylko brakiem bitu `0x40` + `f[24]=0x32`.
+
+**Wentylacja-Harmonogram** i **Wentylacja-Harm-Urlop** to osobny harmonogram biegów (niezależny od Termostat-Harmonogram, który dotyczy setpointów — §4.1).
 
 ### 4.4 Wietrzenie (overlay ON/OFF)
 
@@ -610,21 +623,28 @@ Niezależny od sezonu i trybu temp.
 
 ### 4.5 Programy trybu pracy (Normal / Poza domem / Urlop)
 
-3-stanowy radio w menu Nano:
+3-stanowy radio w menu Nano. Programy nadpisują Wentylacja menu i setpoint Termostatu.
 
-| Program | E4 f[5] | E4 f[28] | f[14-15] aktywny setpoint |
-|---------|---------|----------|---------------------------|
-| Normal/Harmonogram | `0x44` | bieg z harmonogramu (`0x03` dla B1) | eco_zima/comfort cyklicznie |
-| Poza domem | `0x44` | bieg z harmonogramu (`0x03` dla B1) | poza_domem (20°C) stale |
-| Urlop | `0x40` | `0x02` ("zatrzymaj komendę biegu") | poza_domem (20°C) |
+| Program | f[5] | f[14-15] (setpoint) | f[28] |
+|---------|------|---------------------|-------|
+| Normal | `0x40` | wg Termostatu | wg Wentylacji |
+| Poza domem | `0x44` (bit `0x04` SET) | poza_domem (20°C) | bieg ze slotu poza-domem harmonogramu |
+| Urlop | `0x40` | poza_domem (20°C) | `0x40` (validity=0, bieg=0) |
 
-**Bit `0x04` w f[5] = "harmonogram aktywny":** SET (`0x44`) → master rotuje setpoint zgodnie z harmonogramem · CLEAR (`0x40`) → harmonogram zatrzymany (Urlop).
+Bit `0x04` w `f[5]` = "Programy=Poza domem aktywne". Aktywny tylko w tym trybie; Normal i Urlop → CLEAR.
 
-Normal vs Poza domem w ramce **identyczne** — Nano aplikuje override setpointu lokalnie. Z perspektywy slave i AERO **nieodróżnialne**.
+**Setpoint współdzielony:** Menu serwisowe Nano ma jedną nastawę "Poza Domem" (20°C) używaną dla OBU programów (Poza domem i Urlop).
 
-Urlop: f[28]=`0x02` to wartość poza tabelą biegów (bit 0 "validity" = 0). AERO interpretuje jako "tryb urlop, wentylacja minimalna".
+**Programy=Urlop vs Wentylacja=Harm-Urlop:**
 
-**Setpoint współdzielony:** menu serwisowe Nano ma jedną nastawę "Poza Domem" (20°C) używaną dla OBU programów.
+| | Programy=Urlop | Wentylacja=Harm-Urlop |
+|----|----------------|------------------------|
+| f[28] | `0x40` (validity=0) | bieg z slotu, bez `0x40` |
+| f[24] | wg Termostatu | `0x32` |
+| f[5] bit `0x04` | CLEAR | bez wpływu |
+| Setpoint | poza_domem (override) | wg Termostatu |
+
+Programy=Urlop wyłącza wentylację (validity=0). Wentylacja=Harm-Urlop sygnalizuje "tryb minimalny" przez `f[24]=0x32`, ale dalej rotuje wg harmonogramu.
 
 ### 4.6 Setpointy temperatur (menu serwisowe Nano)
 
@@ -634,7 +654,7 @@ Urlop: f[28]=`0x02` to wartość poza tabelą biegów (bit 0 "validity" = 0). AE
 |----------|---------------------|-------------|
 | Comfort | f[8-9] | (zależy od harmonogramu) |
 | Eco zima | f[10-11] | Sezon=Zima |
-| Eco lato/chłodzenie | f[12-13] | Sezon=Lato/Chłodz |
+| Eco chłodzenie | f[12-13] | Sezon=Lato/Chłodz |
 | Manual | f[14-15] | Termostat=Manual |
 | Poza domem | f[16-17] | Urlop+Zima, Poza domem |
 
@@ -643,15 +663,15 @@ Urlop: f[28]=`0x02` to wartość poza tabelą biegów (bit 0 "validity" = 0). AE
 - Harm/Urlop + Zima → eco_zima (21°C) lub poza_domem
 - Harm/Urlop + Lato/Chłodz → eco_lato (18°C)
 
-### 4.7 Bypass (Manual OFF / AUTO / Manual ON)
+### 4.7 Bypass (OFF / AUTO / ON)
 
 E5 f[25], 3-stanowy enum. Patrz §3.7.
 
 | Kod | Stan |
 |-----|------|
-| `0x60` | Manual OFF |
+| `0x60` | OFF |
 | `0x61` | AUTO |
-| `0x62` | Manual ON |
+| `0x62` | ON |
 
 Stan fizyczny bypass widać w E4(63) f[28] (§3.4): `0x40`=zamknięty, `0x60`=otwarty.
 
@@ -735,16 +755,10 @@ Nano slave **synchronizuje zegar z magistrali** (zegar na wyświetlaczu pokazuje
 9. **f[7] w E4 od slave** (`0x02`/`0x03`) — stałe w sesji, zmienia się między sesjami. Może model firmware, liczba urządzeń, tryb pracy Nano.
 10. **Jak Nano master dodaje slave do listy wake-up'ów?** 80 boot NIE wystarcza (empirycznie). Prawdopodobnie rejestracja przez menu UI mastera.
 11. **f[4-13] w E4(29) src=0x2X** (config push) — stałe między power cycles, nie zawierają daty/zegara. Co dokładnie kodują? (sezon, harmonogram tygodniowy, setpointy, kalibracja AERO?)
+12. ~~**Wentylacja-Harmonogram vs Manual — czym się różnią protokołowo?**~~ ✅ **ROZSTRZYGNIĘTE 2026-04-26**: Wentylacja=Harmonogram protokołowo identyczne z Manual+slot_bieg. Wentylacja=Harm-Urlop różni się brakiem bitu `0x40` w f[28] + f[24]=`0x32` (bieg dalej z slotu, jak Normalny Harm).
+13. **Edycja harmonogramu (sloty czasowe → wartość) — co się zmienia w protokole?** Nano (master i slave) ma osobne menu harmonogramu (Termostat-Harmonogram: kiedy comfort/eco; Wentylacja-Harmonogram: kiedy B1/B2/B3). Hipoteza: harmonogram trzymany lokalnie w EEPROM, ale skoro Nano slave też pozwala edytować — być może jest broadcastowany do innych urządzeń (Nano nie jest wyłącznie panelem do AERO, może działać jako termostat pokojowy wysyłający nastawy do innych central). **Test do wykonania:** zmienić slot harmonogramu w Nano master (np. 06:00 comfort → 07:00 comfort) i porównać sniff przed/po. Szukać zmiany w D0-D5 (slave config), E5 setpointach, lub w nowych ramkach które wcześniej się nie pojawiały.
 
-**Rozstrzygnięte:**
-- ✅ 2026-04-19: K=`0xA3` dla wszystkich obserwowanych ramek głównych
-- ✅ 2026-04-24: per-id wake-up `0xA8+id` rozwiązuje kolizje slave
-- ✅ 2026-04-25: bit `0x40` w E4 f[28] = "stable config" (Manual+Zima), nie "harmonogram"
-- ✅ 2026-04-25: f[24]/f[28] mastera = stan menu Nano (tryb mocy fan, harmonogram, sezon) z EEPROM, NIE komunikacja ze slave/AERO
-- ✅ 2026-04-25: topologia bus = single multi-drop, problem "VS zakłócały AERO" wynikał z luźnej masy RS-485
-- ✅ 2026-04-25: f[25-26] = 3-fazowa transmisja daty (rok / miesiąc / dzień)
-- ✅ 2026-04-25: Urlop NIE ma własnego kodu w f[27] — używa `0x00` jak Harmonogram
-- ✅ 2026-04-25: Nano slave synchronizuje zegar z magistrali (mechanizm w trakcie weryfikacji)
+Historia weryfikacji empirycznej w [HISTORY.md](HISTORY.md).
 
 ---
 
