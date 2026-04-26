@@ -202,7 +202,7 @@ E4,21,[cks],29,[F4],[F5],00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],
 | f[7] | 0-6 | **Day of week** (`0=Pn..6=Nd`) | KNOWN |
 | f[8] | 0-23 | **Godzina** (decimal jako byte) | KNOWN |
 | f[9] | 0-59 | **Minuta** (decimal jako byte) | KNOWN |
-| f[10] | `0x7E/0x08` | 0x08 obserwowane przy fan OFF | PARTIAL |
+| f[10] | `0x7E` | filler (stały, możliwe że pole dla features niedostępnych w naszym setupie) | UNKNOWN |
 | f[11] | `0x00` | stałe | UNKNOWN |
 | f[12-13] | HH,LL | **Temp pokojowa Nano** (sensor wewn CTP + korekta termostatu z menu serwisowego, zakres -10..+10°C) | KNOWN |
 | f[14-15] | HH,LL | **Aktywny setpoint** (śledzi tryb: Comfort/Eco/Manual/Poza domem) | KNOWN |
@@ -755,18 +755,22 @@ Nano slave **synchronizuje zegar z magistrali** (zegar na wyświetlaczu pokazuje
 ## 6. Otwarte pytania
 
 1. **E5(29) f[18-19]** (`00,30` stałe) — przełączanie lato/zima/chłodzenie nie zmienia. Może maska konfiguracji.
-2. **E4(29) f[5] bit 0x40** — odkryte 2026-04-25 jako flaga AERO_OK (`0x40`=AERO odpowiada, `0x00`=brak odp). Reaguje live.
-3. **E4(29) f[24]** (`0x32`/`0x64`) — paruje z f[28] bit `0x40`, ale dokładny wzór wymaga doprecyzowania.
-4. **E5(29) f[28]** — pełny enum kodów UI (obserwowane niejednolite wartości, zależne od ścieżki nawigacji).
-5. **Format E2, D0-D5** — wartości w polach "stałych" mogą się zmieniać przy edge case'ach.
-6. **Cold-start Nano** — czy istnieje sekwencja handshake? ESP-master jej nie robi i działa, ale AERO może startować w trybie "trusted".
-7. **Co dokładnie przełącza slave w stan synced (f[28] bit `0x40`)?** ESP master wysyła wake-up + config push E4(29) src=0x2X, ale slave dalej w trybie unsynced. Brakuje prawdopodobnie specyficznej sekwencji handshake (per-id D0/D1? specjalne pole "accept" w E4 src=0x2X?).
-8. **Rola src=0x56 wake-up'ów (AA/AB/AC,56)** — inny kanał, inny CRC, payload `0x00`. Hipoteza: osobny bus dla EX4/iNEXT.
-9. **f[7] w E4 od slave** (`0x02`/`0x03`) — stałe w sesji, zmienia się między sesjami. Może model firmware, liczba urządzeń, tryb pracy Nano.
-10. **Jak Nano master dodaje slave do listy wake-up'ów?** 80 boot NIE wystarcza (empirycznie). Prawdopodobnie rejestracja przez menu UI mastera.
-11. **f[4-13] w E4(29) src=0x2X** (config push) — stałe między power cycles, nie zawierają daty/zegara. Co dokładnie kodują? (sezon, harmonogram tygodniowy, setpointy, kalibracja AERO?)
-12. ~~**Wentylacja-Harmonogram vs Manual — czym się różnią protokołowo?**~~ ✅ **ROZSTRZYGNIĘTE 2026-04-26**: Wentylacja=Harmonogram protokołowo identyczne z Manual+slot_bieg. Wentylacja=Harm-Urlop różni się brakiem bitu `0x40` w f[28] + f[24]=`0x32` (bieg dalej z slotu, jak Normalny Harm).
-13. ~~**Edycja harmonogramu — co się zmienia w protokole?**~~ ✅ **ROZSTRZYGNIĘTE 2026-04-26**: harmonogram (sloty czasowe comf1/comf2/poza-domem dla 7 dni + święto) trzymany **lokalnie w EEPROM** każdego Nano (master i slave mają własne edytory). NIE broadcastowany na C14. Slave widzi tylko efekt — aktualny setpoint w `f[14-15]` i bieg w `f[28]`. Test: zmiana 3 slotów (comf1: 0-0→10-18, comf2: 0-0→20-21, poza: 24-6→24-5) przy Nano master nie spowodowała żadnej zmiany w 22 typach ramek cyklu Master Full (D0-D5, 8X, 9X, AA-AC, E2, E3, F0, 81 — wszystkie identyczne; tylko E4 i E5 z rutynowymi różnicami cksum/zegar/drift temp).
+2. **E4(29) f[24]** (`0x32`/`0x64`) — paruje z f[28] bit `0x40` (Term=Manual & korekta=0). Inne stany niezbadane.
+3. **E5(29) f[28]** — pełny enum kodów UI (obserwowane niejednolite wartości, zależne od ścieżki nawigacji).
+4. **Format E2, D0-D5** — `f[4]` i `f[6]` w D0-D5 (stałe `0x53`/`0x41`) prawdopodobnie też parametry serwisowe. Pozostałe pola D0-D5 wymagają identyfikacji testem.
+5. **Cold-start Nano** — czy istnieje sekwencja handshake? ESP-master jej nie robi i działa, ale AERO może startować w trybie "trusted".
+6. **Co dokładnie przełącza slave w stan synced (f[28] bit `0x40`)?** ESP master wysyła wake-up + config push E4(29) src=0x2X, ale slave dalej w trybie unsynced. Brakuje prawdopodobnie specyficznej sekwencji handshake (per-id D0/D1? specjalne pole "accept" w E4 src=0x2X?).
+7. **Rola src=0x56 wake-up'ów (AA/AB/AC,56)** — inny kanał, inny CRC, payload `0x00`. Hipoteza: osobny bus dla EX4/iNEXT.
+8. **f[7] w E4 od slave** (`0x02`/`0x03`) — stałe w sesji, zmienia się między sesjami. Może model firmware, liczba urządzeń, tryb pracy Nano.
+9. **Jak Nano master dodaje slave do listy wake-up'ów?** 80 boot NIE wystarcza (empirycznie). Prawdopodobnie rejestracja przez menu UI mastera.
+10. **f[4-13] w E4(29) src=0x2X** (config push) — stałe między power cycles, nie zawierają daty/zegara. Co dokładnie kodują? (sezon, harmonogram tygodniowy, setpointy, kalibracja AERO?)
+
+### Niezweryfikowane historyczne hipotezy (do sprawdzenia)
+
+Stare obserwacje, które się NIE potwierdziły w nowszych testach — możliwe że były bus glitch / RS-485 zakłócenie albo wymagają specyficznego stanu którego jeszcze nie wywołaliśmy:
+
+- **E4(29) f[10]=0x08 przy fan OFF** (vs `0x7E`) — historyczna obserwacja 2026-04-23, nie zaobserwowane podczas systematycznego testu Wentylacja=Stop 2026-04-26 na Nano master. Możliwe bus glitch / błędny parser w starym skrypcie. Do sprawdzenia: czy występuje gdy Nano slave aktywny.
+- **E5(29) f[26]=0x50 gdy slave aktywny** (vs `0x00`) — historyczna obserwacja 2026-04-23. **Nie testowane 2026-04-26** — sesja była tylko z Nano master, bez slave na busie. Do sprawdzenia w przyszłej sesji ze slave.
 
 Historia weryfikacji empirycznej w [HISTORY.md](HISTORY.md).
 
