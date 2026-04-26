@@ -1,5 +1,8 @@
 *.log
 logs_*.txt
+id_markers_*.txt
+night_logs/
+night_scan.sh
 packages/
 secrets.yaml
 *.swp
