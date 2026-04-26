@@ -550,7 +550,7 @@ Zmiana ON/OFF dla "praca z funkcja chłodzenia" i "praca z funkcja pwm" — żad
 | Bajt | Parametr | Encoding | Test |
 |------|----------|----------|------|
 | f[5] | Start osuszania - przekroczona wilgotność % | uint8 dec | 75→100 (`0x4B→0x64`), 100→50 (`0x64→0x32`) |
-| f[6] | Drugi parametr osuszania % (nazwa nieznana) | uint8 dec | 65→55 (`0x41→0x37`) |
+| f[6] | Stop osuszania % | uint8 dec | 65→55 (`0x41→0x37`) |
 | f[7-8] | Start wietrzenia CO2 ppm (0-2000) | HH*128 + LL%128 (jak temperatura, bez offsetu) | 1000→945 (`07,68→07,31`) |
 | f[9-10] | Stop wietrzenia CO2 ppm | jak f[7-8] | 900→850 (`07,04→06,52`) |
 | f[11-12] | Start wietrzenia VOC (0-1000) | jak f[7-8] | 110 (`00,6E`) |

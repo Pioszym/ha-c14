@@ -434,14 +434,14 @@ DX,44,[cks],29,[F4],[OSUSZ],[F6],[F7],[F8],[F9],[F10],00,[F12],00,[F14],7E×14,2
 |------|---------|-----------|--------|
 | f[4] | `0x53` (83) | stała (parametr config) | UNKNOWN |
 | f[5] | 0-100 | **Start osuszania — przekroczona wilgotność %** (próg dla startu osuszania, menu serwisowe; `0x4B`=75%, `0x64`=100%, `0x32`=50%) | KNOWN |
-| f[6] | 0-100 | **Drugi parametr osuszania %** (linear dec, np. `0x41`=65, `0x37`=55 — nazwa menu nieznana) | PARTIAL |
+| f[6] | 0-100 | **Stop osuszania %** (próg wilgotności do zatrzymania osuszania, linear dec; `0x41`=65%, `0x37`=55%) | KNOWN |
 | f[7-8] | HH,LL | **Start wietrzenia CO2 ppm** (zakres 0-2000, encoding jak temperatura: `ppm = HH*128 + LL%128`, bez offsetu -2000; `07,68`=1000ppm, `07,31`=945ppm) | KNOWN |
 | f[9-10] | HH,LL | **Stop wietrzenia CO2 ppm** (encoding jak f[7-8]; `07,04`=900ppm, `06,52`=850ppm) | KNOWN |
 | f[11-12] | HH,LL | **Start wietrzenia VOC** (zakres 0-1000, encoding jak f[7-8]; `00,6E`=110) | KNOWN |
 | f[13-14] | HH,LL | **Stop wietrzenia VOC** (encoding jak f[11-12]; `00,5A`=90) | KNOWN |
 | f[15-28] | `0x7E` ×14 | filler | UNKNOWN |
 
-D0-D5 broadcastowane do slaves zawierają parametry serwisowe rekuperatora (progi osuszania, CO2, VOC). f[4] i f[6] (stałe `0x53`/`0x41`) prawdopodobnie też są parametrami z menu serwisowego — czekają na identyfikację.
+D0-D5 broadcastowane do slaves zawierają parametry serwisowe rekuperatora (progi osuszania, CO2, VOC). `f[4]` (stałe `0x53`) prawdopodobnie też parametr z menu serwisowego — czeka na identyfikację.
 
 ### 3.11 8B/9F/82/8C/8D/8E/95(29) src=0x44 — heartbeats (cykl #15-21)
 
@@ -473,28 +473,33 @@ Odkryte 2026-04-24 (sweep id=2..6): każde id slave'a ma **dedykowaną ramkę wa
 Slave nadaje tę ramkę ~280ms po swoim wake-up (`AA`/`AB`/`AC` src=0x44, §3.12). Format identyczny jak ramka master E4(29) src=0x21 (§3.2) — różnica tylko w `f[3]` (`0x2A`/`0x2B`/`0x2C` zamiast `0x29`) i w semantyce niektórych pól.
 
 ```
-E4,21,[cks],2X,[F4],[F5],00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],7E×7,14,[F24],[ROT_A],[ROT_B],[F27],[F28],23
+E4,21,[cks],2X,0A,40,00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],7E×7,14,[F24],[ROT_A],[ROT_B],[F27],[F28],23
 ```
 
-**Pola kopiowane 1:1 z mastera** (slave w pełni reaktywny, patrz §5):
-
-| Pole | Źródło |
-|------|--------|
-| f[7] day_of_week | f[7] master |
-| f[8-9] godz/min | f[8-9] master |
-| f[12-13] T pokoj | własny sensor CTP slave |
-| f[14-15] aktywny setpoint | f[14-15] master |
-| f[25-26] data (3 fazy) | f[25-26] master |
-| f[27] tryb temp + sezon + wietrzenie | f[27] master |
-
-**Pola charakterystyczne dla slave:**
-
-| Bajt | Wartość | Znaczenie |
-|------|---------|-----------|
-| f[3] | `0x2A`/`0x2B`/`0x2C`/... | **Subtyp = `0x28+id`** (różni od mastera `0x29`) |
-| f[7] | `0x02` / `0x03` | Stałe w sesji, **zmienia się między sesjami** (`0x02` w starszych, `0x03` po eksperymentach z ESP master) — może liczba urządzeń w EEPROM lub tryb pracy Nano |
-| f[24] | `0x32` / `0x64` | **NORMALNY (synced) = `0x64`**, AWARYJNY (unsynced) = `0x32`. Paruje z f[28]. |
-| f[28] | `0x43` / `0x03` | **NORMALNY (synced) = `0x43`** (`0x40`\|`0x03`, B1 + sync flag), AWARYJNY = `0x03` (sam B1 bez sync). Slave **NIE komenderuje biegami** mimo wartości w `f[28]` — AERO ignoruje komendy z `f[3] ≠ 0x29` |
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[0] | `0xE4` | ID ramki | KNOWN |
+| f[1] | `0x21` | marker (jak master broadcast) | KNOWN |
+| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
+| f[3] | `0x2A`/`0x2B`/`0x2C`/... | **Subtyp = `0x28+id`** (różni od mastera `0x29`) | KNOWN |
+| f[4] | `0x0A` | stała (jak master) | UNKNOWN |
+| f[5] | `0x40` | flaga AERO_OK kopiowana z mastera (slave nie modyfikuje) | KNOWN |
+| f[6] | `0x00` | stałe | UNKNOWN |
+| f[7] | `0x02` / `0x03` | Stałe w sesji, **zmienia się między sesjami** (`0x02` w starszych, `0x03` po eksperymentach z ESP master) — może liczba urządzeń w EEPROM lub tryb pracy Nano | PARTIAL |
+| f[8] | 0-23 | **Godzina** kopiowana z mastera | KNOWN |
+| f[9] | 0-59 | **Minuta** kopiowana z mastera | KNOWN |
+| f[10] | `0x7E` | filler | UNKNOWN |
+| f[11] | `0x00` | stałe | UNKNOWN |
+| f[12-13] | HH,LL | **Temp pokojowa slave** (własny sensor CTP slave + jego korekta) | KNOWN |
+| f[14-15] | HH,LL | **Aktywny setpoint** kopiowany z mastera | KNOWN |
+| f[16-22] | `0x7E` ×7 | filler (jak master) | UNKNOWN |
+| f[23] | `0x14` | stałe (jak master) | UNKNOWN |
+| f[24] | `0x32` / `0x64` | **NORMALNY (synced) = `0x64`**, AWARYJNY (unsynced) = `0x32`. Paruje z f[28] bit `0x40`. | KNOWN |
+| f[25] | `0x00`-`0x03` | **Faza transmisji daty** kopiowana z mastera | KNOWN |
+| f[26] | wartość daty | rok/miesiąc/dzień zależnie od f[25] (kopia z mastera) | KNOWN |
+| f[27] | bitfield | tryb temp + sezon + wietrzenie kopiowane z mastera | KNOWN |
+| f[28] | `0x43` / `0x03` | **NORMALNY (synced) = `0x43`** (`0x40`\|`0x03`, B1 + sync flag), AWARYJNY = `0x03` (sam B1 bez sync). Slave **NIE komenderuje biegami** mimo wartości w `f[28]` — AERO ignoruje komendy z `f[3] ≠ 0x29` | KNOWN |
+| f[29] | `0x23` | terminator | KNOWN |
 
 **2 stany slave (synced vs unsynced)** — szczegóły w §5.
 
