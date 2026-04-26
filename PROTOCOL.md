@@ -100,19 +100,19 @@ Sekwencja Master Mini: komenda biegu najpierw, trigger QUERY zaraz po, potem res
 |---|-------|---------|------|
 | 1 | E4(29) src=0x21 | **Master** | Komenda biegu + zegar |
 | 2 | E3(29) src=0x44 | **Master** | **QUERY — trigger AERO** |
-| 3 | E4(63) src=0x21 | **AERO** | Odpowiedź AERO (~400ms po triggerze) |
-| 4 | E3(29) src=0x56 | **Master** | iNEXT slot (zera) |
-| 5 | E2(29) src=0x44 | **Master** | Status broadcast |
-| 6 | E5(29) src=0x21 | **Master** | Setpointy temperatur + bypass |
-| 7 | F0(29) src=0x44 | **Master** | Heartbeat (0x7E fill) |
-| 8 | 81(29) src=0x44 | **Master** | Heartbeat Master |
-| 9 | D0(29) src=0x44 | **Master** | Slave config 1 |
-| 10 | D1(29) src=0x44 | **Master** | Slave config 2 |
-| 11 | D2(29) src=0x44 | **Master** | Slave config 3 |
+| — | E4(63) src=0x21 | **AERO** | Odpowiedź AERO (~400ms po #2) |
+| 3 | E3(29) src=0x56 | **Master** | iNEXT slot (zera) |
+| 4 | E2(29) src=0x44 | **Master** | Status broadcast |
+| 5 | E5(29) src=0x21 | **Master** | Setpointy temperatur + bypass |
+| 6 | F0(29) src=0x44 | **Master** | Heartbeat (0x7E fill) |
+| 7 | 81(29) src=0x44 | **Master** | Heartbeat Master |
+| 8 | D0(29) src=0x44 | **Master** | Slave config 1 |
+| 9 | D1(29) src=0x44 | **Master** | Slave config 2 |
+| 10 | D2(29) src=0x44 | **Master** | Slave config 3 |
 
 Uwaga: w Master Mini Nano slave jest **cichy** — nie odpowiada na żadną ramkę. Dla aktywacji slave potrzebna AA(29) src=0x44 z Master Full.
 
-### Master Full (27 ramek master + 2 AERO, ~22s) — obserwowane
+### Master Full (27 ramek master + 2 AERO + N×slave, ~22s) — obserwowane
 
 Master Full to rozszerzona wersja Mini, aktywowana w menu serwisowym Nano (TRYB W SIECI C14 = MASTER). Dodaje 17 ramek enumeration/keepalive dla rzadkich slave ID. **E3(29)_44 występuje DWA razy w cyklu** — AERO odpowiada E4(63) dwukrotnie per cykl (~10s + ~13s split).
 
@@ -144,12 +144,16 @@ Pełna sekwencja w kolejności nadawania:
 | 20 | 8E(29) src=0x44 | **Master** | Heartbeat 0x8E |
 | 21 | 95(29) src=0x44 | **Master** | Heartbeat 0x95 |
 | 22 | AA(29) src=0x44 | **Master** | **Wake-up dla slave id=2** (0x7E fill) |
-| — | E4(29) src=0x21 f[3]=0x2A | **Slave** | **Odpowiedź slave** E4(2A) (~400ms po #22, jeśli slave obecny) |
-| 23 | AA(29) src=0x56 | **Master** | Broadcast 0xAA iNEXT-side (0x00 fill) |
-| 24 | AB(29) src=0x44 | **Master** | Broadcast 0xAB master-side |
-| 25 | AB(29) src=0x56 | **Master** | Broadcast 0xAB iNEXT-side |
-| 26 | AC(29) src=0x44 | **Master** | Broadcast 0xAC master-side |
-| 27 | AC(29) src=0x56 | **Master** | Broadcast 0xAC iNEXT-side |
+| — | E4(29) src=0x21 f[3]=0x2A | **Slave id=2** | **Odpowiedź slave id=2** (~280ms po #22, jeśli zarejestrowany w menu mastera) |
+| 23 | AA(29) src=0x56 | **Master** | iNEXT slot dla id=2 (0x00 fill) |
+| 24 | AB(29) src=0x44 | **Master** | **Wake-up dla slave id=3** (0x7E fill) |
+| — | E4(29) src=0x21 f[3]=0x2B | **Slave id=3** | **Odpowiedź slave id=3** (~280ms po #24, jeśli zarejestrowany) |
+| 25 | AB(29) src=0x56 | **Master** | iNEXT slot dla id=3 (0x00 fill) |
+| 26 | AC(29) src=0x44 | **Master** | **Wake-up dla slave id=4** (0x7E fill) |
+| — | E4(29) src=0x21 f[3]=0x2C | **Slave id=4** | **Odpowiedź slave id=4** (~280ms po #26, jeśli zarejestrowany) |
+| 27 | AC(29) src=0x56 | **Master** | iNEXT slot dla id=4 (0x00 fill) |
+
+**Wake-upy dla id ≥ 5:** Cykl Master Full obserwowany Nano master ma wake-upy tylko dla id 2-4 (`AA/AB/AC`). Wzór protokołu sugeruje, że `f[0]=0xA8+id` rozszerza się dalej (`AD` dla id=5, `AE` dla id=6, …, `BC` dla id=20), ale w obserwowanym Nano master nadawanie wake-up'ów dla id ≥ 5 **nie zostało zaobserwowane** — prawdopodobnie wymaga rejestracji slave w menu mastera, której procedury nie znamy.
 
 **Zdarzenia asynchroniczne (poza cyklem master):**
 
