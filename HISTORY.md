@@ -499,3 +499,21 @@ Programy=Urlop = "wyłącz wentylację". Wentylacja=Harm-Urlop = "tryb minimalny
 - §4.1 Termostat: Urlop ma własny kod
 - §4.3 Wentylacja: 6 opcji rozszyfrowane
 - §4.5 Programy: pełna tabela 3 stanów
+
+---
+
+## 2026-04-26: Test edycji harmonogramu (Q13)
+
+Nano master, edycja menu "Harmonogram" (sloty czasowe gdzie ma być aktywne comfort/poza-domem; eco implicite w pozostałym czasie):
+- 8 linii w menu: Pn/Wt/Śr/Cz/Pt/Sob/Nd + Święto (wszystkie identyczne w teście)
+- Każdy dzień: 2 zakresy comfort + 1 zakres poza-domem
+- Interwał edycji 15 min
+
+**Procedura:** baseline (30 ramek = ~1 cykl Master Full) → zmiana 3 slotów (comf1: 0-0→10-18, comf2: 0-0→20-21, poza: 24-6→24-5) → after (30 ramek).
+
+**Wynik:** wszystkie 22 typy ramek cyklu identyczne przed/po:
+- 81, 82, 8B, 8C, 8D, 8E, 95, 9F, AA, AB, AC, D0, D1, D2, D3, D4, D5, E2, E3, F0 — bajt-w-bajt taka sama
+- E4(29)_21 — tylko rutynowe różnice (cksum, f[8-9] zegar +1min, f[12-13] room temp drift, f[25-26] rotator daty)
+- E5(29)_21 — tylko cksum + f[7] CZERPNIA temp drift 1 LSB
+
+**Wniosek:** harmonogram trzymany w EEPROM lokalnie każdego Nano (master i slave). NIE broadcastowany na C14. Konsekwencja: slave nie zna harmonogramu mastera — widzi tylko aktualny setpoint w `f[14-15]` i bieg w `f[28]`. Każdy Nano w trybie slave ma własną kopię harmonogramu (do osobnej edycji).
