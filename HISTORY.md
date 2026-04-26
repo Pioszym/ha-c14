@@ -517,3 +517,51 @@ Nano master, edycja menu "Harmonogram" (sloty czasowe gdzie ma być aktywne comf
 - E5(29)_21 — tylko cksum + f[7] CZERPNIA temp drift 1 LSB
 
 **Wniosek:** harmonogram trzymany w EEPROM lokalnie każdego Nano (master i slave). NIE broadcastowany na C14. Konsekwencja: slave nie zna harmonogramu mastera — widzi tylko aktualny setpoint w `f[14-15]` i bieg w `f[28]`. Każdy Nano w trybie slave ma własną kopię harmonogramu (do osobnej edycji).
+
+---
+
+## 2026-04-26: Rozszyfrowanie D0-D5 (parametry serwisowe AERO)
+
+Test menu serwisowego Nano master, zmiany pojedynczych parametrów + porównanie ramek przed/po.
+
+### Korekta termostatu (-10..+10°C)
+Wpływa na **E4 f[12-13]** (Temp pokojowa Nano) — Nano dodaje offset lokalnie do raw sensora przed wysłaniem. Zmiana 0→+4 dała diff `f[12-13]: 11,20 (20.8°C) → 11,4D (25.3°C)`. Nie odrębne pole, tylko kalibracja.
+
+### Bit 0x40 w f[28] — uściślenie
+Przy korekta=+4 Nano przeszedł w `f[28]=0x03`/`f[24]=0x32` (CLEAR bitu `0x40`) mimo Term=Manual. Po wróceniu korekty na 0 → `f[28]=0x43`/`f[24]=0x64`. Pełna reguła:
+
+**bit `0x40` SET ⇔ (Termostat=Manual) AND (korekta termostatu = 0)**
+
+Wcześniejsza hipoteza "Manual+Zima" była niepełna. Sezon nieistotny, ale każda kalibracja sensora = bit CLEAR.
+
+### Histereza termostatu — lokalna
+Zmiana 0.5→2.5 nie wpłynęła na żadną ramkę. Trzymana w EEPROM.
+
+### Informacja główna (selektor wyświetlacza Nano) — lokalna
+Zmiana "pomieszczenia" → "nawiew wentylacji" — tylko rutynowe diff E4. Lokalne ustawienie display.
+
+### Rozdzielacz - chłodzenie / PWM checkboxy — lokalne
+Zmiana ON/OFF dla "praca z funkcja chłodzenia" i "praca z funkcja pwm" — żadna ramka się nie zmienia. Te checkboxy ukrywają opcje w menu (np. blokują dostęp do Sezon=Chłodzenie), ale nie wpływają na protokół.
+
+### D0-D5 — parametry serwisowe rekuperatora ☆
+
+**Główne odkrycie:** D0/D1/D2/D3/D4/D5 zawierają identyczny payload z parametrami serwisowymi z menu Nano. Wcześniejsza interpretacja `f[4-6]=53,4B,41` jako ASCII "SKA" była błędna — `0x4B` to przypadkowo kod 'K' bo domyślny próg osuszania = 75%.
+
+| Bajt | Parametr | Encoding | Test |
+|------|----------|----------|------|
+| f[5] | Start osuszania - przekroczona wilgotność % | uint8 dec | 75→100 (`0x4B→0x64`), 100→50 (`0x64→0x32`) |
+| f[6] | Drugi parametr osuszania % (nazwa nieznana) | uint8 dec | 65→55 (`0x41→0x37`) |
+| f[7-8] | Start wietrzenia CO2 ppm (0-2000) | HH*128 + LL%128 (jak temperatura, bez offsetu) | 1000→945 (`07,68→07,31`) |
+| f[9-10] | Stop wietrzenia CO2 ppm | jak f[7-8] | 900→850 (`07,04→06,52`) |
+| f[11-12] | Start wietrzenia VOC (0-1000) | jak f[7-8] | 110 (`00,6E`) |
+| f[13-14] | Stop wietrzenia VOC | jak f[11-12] | 90 (`00,5A`) |
+
+Pozostałe stałe w D0-D5 (do identyfikacji w przyszłych testach):
+- f[4]=`0x53` (83)
+- f[6]=`0x41` (65) — drugi osuszania
+- f[15-28]=`0x7E` filler
+
+**Encoding 2-bajtowy CO2/VOC** używa tej samej formuły co temperatura (`HH*128 + LL%128`), tylko bez offsetu `-2000`. Predykcja stop CO2: 900ppm → `07,04` (7*128+4=900) potwierdzona ramką przed zmianą; 850ppm → `06,52` (6*128+82=850) potwierdzona po.
+
+### Edycja harmonogramu — lokalna (zamknięcie Q13)
+Zmiana 3 slotów (comf1, comf2, poza-domem) — żadna ramka się nie zmienia. Każdy Nano (master/slave) ma własną kopię w EEPROM.

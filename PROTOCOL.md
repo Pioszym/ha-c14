@@ -204,7 +204,7 @@ E4,21,[cks],29,[F4],[F5],00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],
 | f[9] | 0-59 | **Minuta** (decimal jako byte) | KNOWN |
 | f[10] | `0x7E/0x08` | 0x08 obserwowane przy fan OFF | PARTIAL |
 | f[11] | `0x00` | stałe | UNKNOWN |
-| f[12-13] | HH,LL | **Temp pokojowa Nano** (sensor wewn CTP) | KNOWN |
+| f[12-13] | HH,LL | **Temp pokojowa Nano** (sensor wewn CTP + korekta termostatu z menu serwisowego, zakres -10..+10°C) | KNOWN |
 | f[14-15] | HH,LL | **Aktywny setpoint** (śledzi tryb: Comfort/Eco/Manual/Poza domem) | KNOWN |
 | f[16-22] | `0x7E` ×7 | filler | UNKNOWN |
 | f[23] | `0x14` | stałe | UNKNOWN |
@@ -249,7 +249,7 @@ Bit 0 = validity, bity 1-2 = value biegu:
 
 Overlays / specjalne wartości:
 - `+0x08` (bit 3) = chłodzenie aktywne (B1+cool = `0x0B`)
-- `+0x40` (bit 6) = flaga **"Termostat=Manual"** (paruje z `f[24]=0x64`; Harm/Urlop → bit CLEAR + `f[24]=0x32`)
+- `+0x40` (bit 6) = flaga **"konfiguracja deterministyczna"**: SET ⇔ (Termostat=Manual) AND (korekta termostatu = 0). Paruje z `f[24]=0x64`. Każde naruszenie warunku (Term=Harm/Urlop lub korekta≠0) → bit CLEAR + `f[24]=0x32`
 - `0x40` sam (validity=0, bieg=0) = **Programy=Urlop**
 
 AERO reaguje mechanicznie tylko na bity 1-2. Bity `0x40` i `0x08` ignoruje — to flagi dla slaves.
@@ -422,16 +422,26 @@ Prawie puste: `F0,44,4E,29,7E×25,23`.
 
 Prawie puste: `81,44,5F,29,7E×25,23`.
 
-### 3.10 D0/D1/D2/D3/D4/D5(29) src=0x44 — slave config (cykl #8-13)
+### 3.10 D0/D1/D2/D3/D4/D5(29) src=0x44 — config serwisowy (cykl #8-13)
 
 Identyczny payload, różni się tylko `f[0]` i `f[2]` (cksum). D0-D2 obecne też w Master Mini, D3-D5 dodane w Master Full.
 
 ```
-DX,44,[cks],29,53,4B,41,07,68,07,04,00,6E,00,5A,7E×14,23
+DX,44,[cks],29,[F4],[OSUSZ],[F6],[F7],[F8],[F9],[F10],00,[F12],00,[F14],7E×14,23
 ```
 
-- `f[4-6]` = `0x53,0x4B,0x41` = **ASCII "SKA"** — prawdopodobnie model/vendor string COMPIT (być może "SKALAR")
-- `f[7-14]` = stałe dane config (rola nieznana — prawdopodobnie slot/adres slave'ów w konfiguracji AERO)
+| Bajt | Wartość | Znaczenie | Status |
+|------|---------|-----------|--------|
+| f[4] | `0x53` (83) | stała (parametr config) | UNKNOWN |
+| f[5] | 0-100 | **Start osuszania — przekroczona wilgotność %** (próg dla startu osuszania, menu serwisowe; `0x4B`=75%, `0x64`=100%, `0x32`=50%) | KNOWN |
+| f[6] | 0-100 | **Drugi parametr osuszania %** (linear dec, np. `0x41`=65, `0x37`=55 — nazwa menu nieznana) | PARTIAL |
+| f[7-8] | HH,LL | **Start wietrzenia CO2 ppm** (zakres 0-2000, encoding jak temperatura: `ppm = HH*128 + LL%128`, bez offsetu -2000; `07,68`=1000ppm, `07,31`=945ppm) | KNOWN |
+| f[9-10] | HH,LL | **Stop wietrzenia CO2 ppm** (encoding jak f[7-8]; `07,04`=900ppm, `06,52`=850ppm) | KNOWN |
+| f[11-12] | HH,LL | **Start wietrzenia VOC** (zakres 0-1000, encoding jak f[7-8]; `00,6E`=110) | KNOWN |
+| f[13-14] | HH,LL | **Stop wietrzenia VOC** (encoding jak f[11-12]; `00,5A`=90) | KNOWN |
+| f[15-28] | `0x7E` ×14 | filler | UNKNOWN |
+
+D0-D5 broadcastowane do slaves zawierają parametry serwisowe rekuperatora (progi osuszania, CO2, VOC). f[4] i f[6] (stałe `0x53`/`0x41`) prawdopodobnie też są parametrami z menu serwisowego — czekają na identyfikację.
 
 ### 3.11 8B/9F/82/8C/8D/8E/95(29) src=0x44 — heartbeats (cykl #15-21)
 
