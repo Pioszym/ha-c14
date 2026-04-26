@@ -337,7 +337,7 @@ E4,21,[cks],63,09,74,00,3C,00,00,[CZ_H],[CZ_L],[CZ_H],[CZ_L],[NW_H],[NW_L],[WT_H
 | f[24] | 0-100 | **Nawiew % aktualny** | KNOWN |
 | f[25] | 0-100 | **Wywiew % aktualny** | KNOWN |
 | f[26] | 0-4 | **Bieg:** 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrzenie | KNOWN |
-| f[27] | `0x02` | stałe | UNKNOWN |
+| f[27] | `0x00/0x02` | **Flaga "AERO pracuje"**: `0x00`=Stop (bieg=0), `0x02`=B1/B2/B3 (wentylator aktywny) | KNOWN |
 | f[28] | `0x40/0x60` | **Bypass fizyczny:** `0x40`=zamknięty, `0x60`=otwarty (maska `& 0x20`) | KNOWN |
 | f[29] | `0x23` | terminator | KNOWN |
 
@@ -379,7 +379,7 @@ E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECZ_H],[ECZ_L],[ECL_H],[ECL_
 | f[22] | `0x7E` | filler | UNKNOWN |
 | f[23-24] | `0x00,0x00` | stałe | UNKNOWN |
 | f[25] | `0x60/0x61/0x62` | **Bypass enum** | KNOWN |
-| f[26] | `0x00`/`0x50` | **Slave ACK flag** (hipoteza — `0x50` po aktywacji ESP slave 2026-04-23) | PARTIAL |
+| f[26] | `0x00` | stałe (hipoteza `0x50` gdy slave aktywny — niezweryfikowane, patrz §6) | UNKNOWN |
 | f[27] | `0x00/0x0A/0x14` | **Sezon enum** | KNOWN |
 | f[28] | `0x00-0x1F` | **Kod UI Nano** (stan ekranu — złożony enum) | PARTIAL |
 | f[29] | `0x23` | terminator | KNOWN |
@@ -756,7 +756,7 @@ Nano slave **synchronizuje zegar z magistrali** (zegar na wyświetlaczu pokazuje
 
 1. **E5(29) f[18-19]** (`00,30` stałe) — przełączanie lato/zima/chłodzenie nie zmienia. Może maska konfiguracji.
 2. **E4(29) f[24]** (`0x32`/`0x64`) — paruje z f[28] bit `0x40` (Term=Manual & korekta=0). Inne stany niezbadane.
-3. **E5(29) f[28]** — pełny enum kodów UI (obserwowane niejednolite wartości, zależne od ścieżki nawigacji).
+3. **E5(29) f[28] — kod UI** (obserwowane wartości `0x00`-`0x1F`, zależne od kombinacji Termostat × Sezon × Bieg × Programy × Wentylacja). Dzisiejsze testy (Sezon=Zima): `0x15` dominujące, plus `0x01/02/03/04/05/0B`. Doc historyczny: też `0x18/0x19` w innych konfiguracjach. **Wymaga systematycznego testu na wszystkich sezonach** (Lato bez ogrzewania, Chłodzenie) — dziś tylko Zima.
 4. **Format E2, D0-D5** — `f[4]` i `f[6]` w D0-D5 (stałe `0x53`/`0x41`) prawdopodobnie też parametry serwisowe. Pozostałe pola D0-D5 wymagają identyfikacji testem.
 5. **Cold-start Nano** — czy istnieje sekwencja handshake? ESP-master jej nie robi i działa, ale AERO może startować w trybie "trusted".
 6. **Co dokładnie przełącza slave w stan synced (f[28] bit `0x40`)?** ESP master wysyła wake-up + config push E4(29) src=0x2X, ale slave dalej w trybie unsynced. Brakuje prawdopodobnie specyficznej sekwencji handshake (per-id D0/D1? specjalne pole "accept" w E4 src=0x2X?).
