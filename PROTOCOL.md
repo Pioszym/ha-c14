@@ -379,7 +379,7 @@ E5,21,[cks],29,00,00,[CZ_H],[CZ_L],[CMF_H],[CMF_L],[ECZ_H],[ECZ_L],[ECL_H],[ECL_
 | f[22] | `0x7E` | filler | UNKNOWN |
 | f[23-24] | `0x00,0x00` | stałe | UNKNOWN |
 | f[25] | `0x60/0x61/0x62` | **Bypass enum** | KNOWN |
-| f[26] | `0x00` | stałe (hipoteza `0x50` gdy slave aktywny — niezweryfikowane, patrz §6) | UNKNOWN |
+| f[26] | `0x00` | stałe (hipoteza `0x50` gdy slave aktywny — niezweryfikowane, patrz §7) | UNKNOWN |
 | f[27] | `0x00/0x0A/0x14` | **Sezon enum** | KNOWN |
 | f[28] | `0x00-0x1F` | **Kod UI Nano** (stan ekranu — złożony enum) | PARTIAL |
 | f[29] | `0x23` | terminator | KNOWN |
@@ -585,20 +585,33 @@ E4,2X,[cks],29,[FW_const ×10],[E3_copy_f14-28],23
 
 ---
 
-## 4. Slave SYNC
+## 4. Slave Nano — komunikacja dwukierunkowa
 
-Slave Nano (E4(2X) src=0x21) odbija w cyclic odpowiedzi WSZYSTKIE pola z mastera:
+Slave Nano (panel Color CTP, id=2..20) **nie jest pasywnym reflektorem mastera** — to niezależna jednostka z własnym lokalnym termostatem, harmonogramem (EEPROM) i sensorem CTP. Komunikacja z masterem jest **dwukierunkowa**:
 
-| Pole slave | Źródło z mastera |
-|------------|------------------|
-| f[7] day_of_week | f[7] master |
-| f[8-9] godz/min | f[8-9] master |
-| f[25-26] data (3 fazy) | f[25-26] master |
-| f[27] tryb termostatu + sezon + wietrzenie | f[27] master |
-| f[28] bieg + flagi | f[28] master |
-| f[14-15] aktywny setpoint | f[14-15] master |
+**Master → Slave** (slave echo'uje w E4(2X) src=0x21):
+| Pole | Znaczenie |
+|------|-----------|
+| f[7] | day_of_week — slave wyświetla na ekranie |
+| f[8-9] | godz/min — RTC sync ("DATĘ I CZAS USTAWIA NANO NR 1") |
+| f[25-26] | rotator daty (3 fazy: rok/miesiąc/dzień) — slave dekoduje pełną datę po 3 cyklach |
+| f[27] bity 3-4 | **sezon** (Zima/Lato bez/Chłodzenie) — slave wyświetla i aktualizuje wg mastera |
+| f[27] bit 5 | wietrzenie — slave odbiera, ale na panelu slave'a nie wyświetla (zarządza tym master, dotyczy AERO) |
 
-Slave jest **w pełni reaktywny** — wszystko co master nadaje, slave przyjmuje natychmiast (1-3 cykle).
+**Slave → Master** (slave wysyła własne wartości w E4(2X) src=0x21):
+| Pole | Znaczenie |
+|------|-----------|
+| f[12-13] | **temperatura pokojowa** — pomiar z sensora CTP slave'a (jego własny lokalny pomiar) |
+| f[14-15] | **aktywny SP** — z lokalnego harmonogramu lub Manual setpoint slave'a (NIE echo z mastera) |
+| f[24] | level termostatu slave'a (`0x64`/`0x32`) |
+| **f[27] bity 0-1** | **tryb termostatu lokalny slave'a** (Manual/Harmonogram/Urlop) — niezależny od mastera |
+| f[28] | bieg + flagi — slave nie zarządza biegiem AERO, ale wysyła wartość (echo z EEPROM lub zapamiętana z sesji gdy był masterem) |
+
+**Mechanizm:** każdy slave to lokalny termostat z własnym harmonogramem dziennym w EEPROM. Slave odpytuje user'a (na panelu) o tryb (Manual/Harm/Urlop) i lokalnie decyduje o swoim aktywnym setpoincie. Wysyła to do mastera + własną temperaturę pokojową. Master agreguje informacje od wszystkich slave'ów (id=2..20) i decyduje o biegu AERO (centralnym).
+
+**Bieg AERO i wietrzenie pochodzą wyłącznie z mastera** — slave w E4(2X) wysyła wartości w f[28] ale **AERO ich nie interpretuje** (akceptuje tylko `f[3]=0x29` z master id=1). To są niejako "echo z EEPROM slave'a" — ślad po dawnym byciu masterem albo dla spójności protokołu.
+
+**Hipotetyczna komenda Master → konkretny Slave** (sterowanie kanałami/damperami w wielostrefowym HVAC) — nie obserwowana w naszym setupie (Prodmax 300 może mieć tylko jedną strefę). Naturalne miejsce: `E4(29) src=0x2X` (config push, per-id) lub osobna ramka adresowana per-id. Patrz §7 #12.
 
 ### Synced vs Unsynced — 2 stany Nano slave
 
@@ -633,9 +646,11 @@ Nano slave **synchronizuje zegar z magistrali** (zegar na wyświetlaczu pokazuje
 
 ---
 
-## 5. Menu Nano — cross-reference (ustawienie → bajt ramki)
+## 5. Menu Nano Master — cross-reference (ustawienie → bajt ramki)
 
-Ten dział to indeks: gdzie w protokole znajduje się dane ustawienie z menu Nano. Pełny opis enkodingu — w odpowiedniej sekcji ramki (§3).
+Ten dział to indeks ustawień **Nano w trybie master id=1** (panel sterujący AERO, biegiem, wietrzeniem, sezonem, harmonogramem globalnym). Slave Nano (id=2..20) ma **własne menu** z lokalnym termostatem — patrz §6.
+
+Pełny opis enkodingu — w odpowiedniej sekcji ramki (§3).
 
 ### 5.1 Termostat (Manual / Harmonogram / Urlop)
 
@@ -647,7 +662,7 @@ Ten dział to indeks: gdzie w protokole znajduje się dane ustawienie z menu Nan
 
 Setpoint Term=Urlop+Zima = eco_zima (taki sam jak Harm) — różnica widoczna tylko przez `f[27]` bit 0 + ikonę na wyświetlaczu (kieliszek + zegarek vs sam zegarek).
 
-**Uwaga:** Termostat-Harmonogram (kiedy comfort/eco) to **inny harmonogram** niż Wentylacja-Harmonogram (§5.3, biegi). Sam harmonogram trzymany w EEPROM Nano — sygnalizacja zmian slotów w protokole nieznana (patrz §6).
+**Uwaga:** Termostat-Harmonogram (kiedy comfort/eco) to **inny harmonogram** niż Wentylacja-Harmonogram (§5.3, biegi). Sam harmonogram trzymany w EEPROM Nano — sygnalizacja zmian slotów w protokole nieznana (patrz §7).
 
 ### 5.2 Sezon (Zima / Lato bez ogrzewania / Chłodzenie)
 
@@ -761,11 +776,61 @@ Slave rekonstruuje pełną datę po ~66s (3 cykle Master Full).
 
 ### 5.9 ID sterownika (menu serwisowe)
 
-Wpływa na f[3] we wszystkich ramkach wysyłanych przez Nano: `f[3] = 0x28 + id` (§3.1). Tylko id=1 może sterować biegami.
+Wpływa na f[3] we wszystkich ramkach wysyłanych przez Nano: `f[3] = 0x28 + id` (§3.1). Tylko id=1 może sterować biegami, wietrzeniem, sezonem, datą i zegarem.
 
 ---
 
-## 6. Otwarte pytania
+## 6. Menu Nano Slave — architektura
+
+Nano w trybie slave (id=2..20) to **niezależny lokalny termostat** z własnym harmonogramem i sensorem temperatury, nie pasywny reflektor mastera. Każdy slave to osobny panel CTP montowany w innym pokoju.
+
+### 6.1 Co slave ma własne (niezależne od mastera)
+
+| Element | Opis |
+|---------|------|
+| **EEPROM harmonogramu dziennego** | Lokalny program tygodniowy (comfort/eco per godzina), niezależny od harmonogramu mastera |
+| **Sensor temperatury CTP** | Wbudowany czujnik mierzący temperaturę w pomieszczeniu gdzie wisi panel |
+| **Lokalny termostat (Manual/Harmonogram/Urlop)** | User na panelu slave wybiera lokalnie tryb dla **swojego** pokoju |
+| **Aktywny setpoint** | Z lokalnego harmonogramu lub Manual setpoint slave'a |
+
+### 6.2 Co slave odbiera od mastera (do wyświetlenia/synchronizacji)
+
+| Element | Źródło | Cel |
+|---------|--------|-----|
+| Zegar (godz/min) | f[8-9] mastera | RTC sync, wyświetlanie czasu na panelu slave (komunikat UI: "DATĘ I CZAS USTAWIA NANO NR 1") |
+| Day of week | f[7] mastera | Wyświetlanie + selekcja slotu z lokalnego harmonogramu |
+| Data (rok/mies/dzień) | f[25-26] mastera (3 fazy) | Wyświetlanie pełnej daty (rekonstrukcja po ~66s) |
+| Sezon (Zima/Lato/Chłodzenie) | f[27] bity 3-4 mastera | Wyświetlanie + interpretacja setpointu (eco_zima vs eco_chłodz) |
+
+### 6.3 Co slave wysyła do mastera (raportuje swój stan)
+
+W ramce E4(29) src=0x21 z `f[3]=0x28+id` (patrz §3.13 dla pełnej tabeli bajtów):
+
+| Pole | Znaczenie | Obowiązek mastera |
+|------|-----------|---------------------|
+| f[12-13] | Temperatura pokojowa (sensor CTP slave'a) | Master agreguje temperatury wszystkich slave'ów do decyzji o biegu AERO |
+| f[14-15] | Aktywny setpoint slave'a (z harmonogramu lub Manual) | Master porównuje z temp pokojową aby wnioskować zapotrzebowanie na ogrzewanie/chłodzenie |
+| f[27] bity 0-1 | Lokalny tryb termostatu (Manual/Harm/Urlop) | Master wie który slave jest w jakim trybie |
+| f[24] | Level termostatu (`0x64`/`0x32`) | Stan operacyjny slave'a |
+| f[28] | Bieg + flagi (zapamiętane z EEPROM) | Slave **nie zarządza biegiem AERO** — wartość ignorowana przez AERO (wymaga `f[3]=0x29` mastera) |
+
+### 6.4 Czego slave nie obsługuje
+
+- **Bieg AERO** — slave nie wybiera, nie wyświetla; tylko master sterownik (id=1) komenderuje AERO
+- **Wietrzenie** — wyłącznie master (overlay na bieg)
+- **Bypass** — wyłącznie master (komenda do AERO)
+- **Programy globalne (Poza domem/Urlop)** — wyłącznie master
+- **Setpointy globalne (menu serwisowe)** — wyłącznie master
+
+### 6.5 Hipotetyczna komenda Master → konkretny Slave
+
+W systemach wielostrefowych HVAC master mógłby wysyłać do konkretnego slave'a komendy sterujące (np. otwórz/zamknij damper w pokoju). W naszym setupie (Prodmax 300) **nie obserwowana** — patrz §7 #12.
+
+Naturalne miejsce: rozszerzenie `E4(29) src=0x2X` (config push, per-id) lub osobna ramka adresowana per-id w nieużywanych pozycjach cyklu.
+
+---
+
+## 7. Otwarte pytania
 
 1. **E5(29) f[18-19]** (`00,30` stałe) — przełączanie lato/zima/chłodzenie nie zmienia. Może maska konfiguracji.
 2. **E4(29) f[24]** (`0x32`/`0x64`) — paruje z f[28] bit `0x40` (Term=Manual & korekta=0). Inne stany niezbadane.
@@ -777,7 +842,8 @@ Wpływa na f[3] we wszystkich ramkach wysyłanych przez Nano: `f[3] = 0x28 + id`
 8. **f[7] w E4 od slave** (`0x02`/`0x03`) — stałe w sesji, zmienia się między sesjami. Może model firmware, liczba urządzeń, tryb pracy Nano.
 9. **Jak Nano master "rozpoznaje" slave id≥3 i wysyła do niego config push?** 80 boot NIE wystarcza, pełne echo wszystkich pól mastera w E4(2X) także NIE wystarcza (zweryfikowane 2026-04-26 z VS-3). W menu Nano serwisowym nie ma ustawienia "lista slave'ów" — auto-detect, ale kryterium nieznane. Może wymaga obserwacji slave'a przez N pełnych cykli rotatora daty (3 fazy × M powtórzeń), albo specyficznego pola/flagi w E4(2X) którego brakuje.
 10. **f[4-13] w E4(29) src=0x2X** (config push) — stałe między power cycles, nie zawierają daty/zegara. Co dokładnie kodują? (sezon, harmonogram tygodniowy, setpointy, kalibracja AERO?)
-11. **Hipoteza "łańcuch slave'ów" (do zbadania)** — może slave id=2 (fizyczny) pełni rolę "rejestratora" dla id=3+? Master nadaje config push tylko do id=2 bezwarunkowo, slave id=2 mógłby retransmitować informacje o nowych slave'ach (id=3, 4...) do mastera w specjalnej ramce której nie znamy. Wake-upy AA/AB/AC w cyklu mastera nie pasują do tego modelu (master nadaje je sam, nie przez id=2) — chyba że są stałą częścią cyklu firmware niezależną od rejestracji. Test wymagałby drugiego fizycznego Nano slave'a (nie VS) na busie.
+11. **Hipoteza "łańcuch slave'ów" — OBALONA (2026-04-27).** Przetestowane z fizycznym Nano slave id=4 (potem id=5) na busie z ESP master, bez slave id=2/3 — Nano slave odpowiadał normalnie na wake-up AC/AD i przechodził w stan SYNCED. Slave **nie wymaga** obecności poprzedników w łańcuchu, każdy reaguje wyłącznie na swój wake-up. Architektura jest **broadcast bus** (master + N independent slaves), nie hierarchical chain.
+12. **Hipotetyczna komenda Master → konkretny Slave (multi-zone HVAC)** — w systemach wielostrefowych master mógłby wysyłać per-id komendy sterujące (np. otwórz/zamknij damper w pokoju gdzie jest slave). W obserwowanym ruchu z Prodmax 300 brak takich ramek. Naturalne miejsce: rozszerzenie config push `E4(29) src=0x2X` lub osobna ramka adresowana per-id. Może wymaga konfiguracji Prodmax >300 (większa multi-zona).
 
 ### Niezweryfikowane historyczne hipotezy (do sprawdzenia)
 
