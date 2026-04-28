@@ -2,6 +2,37 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## AERO desync — wymóg bitu `0x40` w E3(29)_44 f[28] (2026-04-28)
+
+**Objaw:** ESP master działał stabilnie ~17h od flasha 2026-04-27 22:40 (5200 odpowiedzi AERO E4(63)). Dziś o 15:32 PL counter `g_aero_resp_total` zatrzymał się — AERO przestał odpowiadać mimo że master cykl szedł dalej (`>>>` ramki w logu, zero `<<<`).
+
+**Verification że AERO żyje:** użytkownik bypass'em fizycznie podpiął AERO bezpośrednio do Nano (omijając ESP) — Nano czytał normalnie. Potem wrócił MITM z Nano w trybie master — AERO odpowiedział od pierwszego cyklu (Nano TX → forward ESP → AERO → ESP RX). Jednoznacznie: hardware OK, AERO żyje, problem tylko gdy ESP=master.
+
+**Fałszywe tropy (kolejność diagnozy):**
+
+1. **HW-0519 #1 (uart_aero) padł** — odrzucone testem Nano-master (uart_aero RX odbierał odpowiedź AERO normalnie)
+2. **`f[5]=0x40` AERO_OK heartbeat w E4(29)** — wczoraj poprzednia logika `(g_last_aero_rx_ms < 120000) ? 0x40 : 0x00` mogła wpadać w spiralę śmierci (cisza AERO >120s → bit CLEAR → AERO interpretuje "master mnie nie widzi" → milczy dalej). Zmienione na sticky `0x40` zawsze, zgodnie z Nano. Niepotrzebne dla rozwiązania głównego, ale i tak poprawne (Nano też zawsze SET).
+3. **Bridge Forward ON + Master ON kolizja** — `RESTORE_DEFAULT_ON` na switchu Forward + master TX na oba UART → potencjalne forward TX z uart_nano echo na uart_aero w oknie odpowiedzi AERO. Wyłączenie Forward nie przywróciło odpowiedzi.
+4. **Termostat=Manual+B1 wymagany** — przełączenie z Harm na Manual ustawiło `f[24]=0x64` (synced) i `f[27]=0x02` (Manual) zgodnie z Nano. AERO nadal milczał.
+5. **Kolejność cyklu E4 vs E3** — pierwsza analiza Nano logu sugerowała że Nano kończy E4(29) na końcu cyklu (vs ESP który zaczyna). Re-analiza z timestamp'ami pokazała że capture Nano złapał środek cyklu (zaczął od E3#44 = #2), a E4(29) na końcu to #1 NASTĘPNEGO cyklu — kolejność identyczna w obu masterach.
+
+**Root cause:** ESP wysyłał `f[28] = bieg | 0x10` w E3(29)_44 (bez bitu `0x40` stable). Zgodnie z PROTOCOL §3.2 oryginalna konwencja "bit 0x40 SET ⇔ Termostat=Manual AND korekta=0" oznaczała że w trybie Harmonogram master legalnie wysyła `0x13`. Wczoraj `0x13` działało (5200 odpowiedzi). Dziś — nie.
+
+**Hipoteza zachowania AERO:** AERO trzyma wewnętrzny stan "synced z masterem" z timeoutem. Dopóki sync świeży, akceptuje E3#44 z dowolnym `f[28]` zawierającym bieg + znacznik `0x10`. Po dłuższej ciszy/przerwaniu sync (dziś ~13:32 PL ESP coś przerwało, dokładny moment nieznany), AERO przechodzi w stan **wymaga ramki deterministycznej konfiguracji** — `f[28]` z bitem `0x40`. Bez `0x40` AERO ignoruje trigger.
+
+Nano master zawsze wysyła `f[28] |= 0x40` (Nano user trzyma Termostat=Manual, więc warunek z PROTOCOL §3.2 zawsze SET). Stąd Nano nigdy nie spotyka tej pułapki.
+
+**Fix:** w `esp02.yaml` w **obu** triggerach E3#44 (#2 ~linia 535 oraz #14 ~linia 747 dla Master Full):
+
+```cpp
+// PRZED:  f[28] = v28 + 0x10;
+// PO:     f[28] = v28 | 0x10 | 0x40;  // zawsze stable bit
+```
+
+Pierwszy fix dotykał tylko #2 — po flashu AERO odpowiedział na #2 ale w Master Full milczał na #14 (bo tam nadal `+ 0x10` bez `0x40`). Drugi flash naprawił też #14, AERO odpowiada 2× per cykl Full zgodnie z PROTOCOL §2.
+
+**Lekcja:** "konwencja Nano" (bit `0x40` zależny od trybu termostatu) NIE jest tym samym co "wymaganie AERO" (bit `0x40` zawsze). Master implementacja powinna trzymać bit SET niezależnie od logicznego trybu, żeby uniknąć desync śmierci po dłuższej przerwie. Aktualizacja PROTOCOL §3.3 — patrz tabela f[28] z uwagą o bit `0x40`.
+
 ## Config push do slave id=2 — Test1+Test2 (2026-04-26 22:41-23:29)
 
 Cel: zweryfikować strukturę ramki E4(29) src=0x2A (config push do slave id=2) — czy bajty są pre-cached w EEPROM mastera, czy generowane on-the-fly z bieżących nastaw.

@@ -310,8 +310,10 @@ Bit 0 (`0x01`) zawsze SET, bity 3-4 = sezon (`0x08` lato, `0x10` chłodz). Tryb 
 | Stan | f[28] |
 |------|-------|
 | B1 + Manual + Zima | `0x53` (`0x03` \| `0x10` \| `0x40`) |
-| B1 + Harmonogram/Urlop | `0x13` (`0x03` \| `0x10`) |
+| B1 + Harmonogram/Urlop | `0x13` (`0x03` \| `0x10`) — patrz uwaga niżej |
 | B1 + Lato/Chłodz + Manual | `0x13` (Lato/Chłodz = unsynced) |
+
+⚠️ **Bit `0x40` jest WYMAGANY do resync AERO** niezależnie od trybu termostatu. AERO toleruje `0x13` (bez `0x40`) tylko dopóki trzyma świeży sync od mastera. Po dłuższej ciszy lub utracie heartbeat-u AERO przechodzi w stan oczekujący ramkę z bitem `0x40` (deterministyczna konfiguracja); bez tego bitu pozostaje cichy mimo że master cyklicznie nadaje E4(29) i E3(29)_44. **Master powinien zawsze wysyłać `f[28] |= 0x40`**, niezależnie od stanu termostatu — patrz HISTORY 2026-04-28. Nano master tak właśnie robi (zawsze SET), my w ESP poprawiliśmy logikę tego dnia.
 
 ### 3.4 E4(63) src=0x21 — ODPOWIEDŹ AERO
 
