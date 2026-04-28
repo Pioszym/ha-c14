@@ -77,6 +77,35 @@ Hipotetyczna delayed reaction (np. "AERO licznik nieprawidłowych setpointów ×
 
 **Praktyczna lekcja:** trzymaj slidery `naw_b1` i `wyw_b1` **≥30%** (zgodnie z Nano-min). Niższe wartości technicznie wysyłają się przez RS-485, ale mogą prowadzić do nieprzewidzianych stanów AERO. Niski próg menu serwisowego Nano (30) to prawdopodobnie nie kaprys interfejsu, a fizyczne ograniczenie urządzenia.
 
+**Drugi trop: gwałtowna obniżka wszystkich setpointów B2/B3 (15:32-33 dziś):**
+
+Setpointy B2/B3 były **stabilne 42/42 i 50/50** od 2026-04-26 09:49 (~2 dni bez zmian). 28.04 w oknie 15:32:51-15:33:31 user wprowadził **7 zmian w 40s**:
+
+| Czas | Slider | Zmiana | Δ |
+|------|--------|--------|---|
+| 15:32:51 | naw_b2 | 42→37 | −5 |
+| 15:32:56 | wyw_b2 | 42→38 | −4 |
+| **15:32:58** | — | **AERO SILENT** | **2s po zmianie wyw_b2** ⚠ |
+| 15:32:59 | wyw_b2 | 38→35 | −3 |
+| 15:33:09 | naw_b3 | 50→46 | −4 |
+| 15:33:14 | naw_b3 | 46→45 | −1 |
+| 15:33:26 | wyw_b3 | 50→41 | −9 |
+| 15:33:31 | wyw_b3 | 41→40 | −1 |
+
+**Korelacja czasowa 2s** między zmianą wyw_b2 (15:32:56) a zamilknięciem (15:32:58) jest pojedynczym data-pointem, ale jednoznacznie wskazuje na **scenariusz bardziej prawdopodobny** niż delayed reaction po B1<30 (sprzed 16h):
+
+**Hipoteza:** AERO ma wewnętrzny watchdog "rapid setpoint change". Przy gwałtownej obniżce wielu setpointów w krótkim czasie (w typowym użyciu Nano user-zmiany są powolne — każdy setpoint w menu serwisowym osobno z potwierdzeniami) AERO przechodzi w **safe / service mode**: TX odpowiedzi off, RX komend dalej działa (wentylator nadal reaguje na bieg/bypass). Wyjście z tego stanu — ramka deterministycznej konfiguracji `E3(29)_44 f[28]` z bitem `0x40` — nasz fix, który wymusza ten bit zawsze.
+
+Spójność z obserwacją:
+- Stabilne 5200 odpowiedzi przed eksperymentem (wartości niezmienione od 26.04)
+- Silent mode aktywuje się **w trakcie spam-zmian** (15:32:58 = 2s po wyw_b2)
+- Selektywny silent (RX OK, TX off) — AERO "się obraził" defensively, nie zerwał
+- B1 niskie 16h wcześniej (24/29) były **krótkotrwałe** (16s każde) i **pojedyncze** zmiany — AERO toleruje pojedyncze, nie tolerue wielokrotnych w krótkim czasie
+
+To dalej hipoteza, nie dowód — ale spójna ze wszystkimi obserwacjami z DB.
+
+**Praktyczna lekcja #2:** zmiany setpointów rób **powoli** (kilka sekund-minut przerwy między każdym sliderem) ALBO **batch'em** (wszystkie zmiany w UI, potem jedno TX po np. 10s debounce). Aktualnie ESP wysyła zmiany w każdym cyklu master_cycle (~22s) z bieżącymi globalnymi — gdy user spam-edytuje, AERO dostaje multiple drastyczne zmiany pod rząd. Rozważ dodanie debounce w `set_action` slidera (np. delay 5s przed pushem nowej wartości do `g_*`).
+
 ## Config push do slave id=2 — Test1+Test2 (2026-04-26 22:41-23:29)
 
 Cel: zweryfikować strukturę ramki E4(29) src=0x2A (config push do slave id=2) — czy bajty są pre-cached w EEPROM mastera, czy generowane on-the-fly z bieżących nastaw.
