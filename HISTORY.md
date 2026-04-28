@@ -2,6 +2,35 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## E3(29)_44 f[27] hardcoded zamiast dynamicznego z g_season (2026-04-28)
+
+**Objaw:** po naprawie f[28] AERO odpowiada, ale **fizyczny Nano slave id=5 nie aktualizuje sezonu na wyświetlaczu** po zmianie z UI ESP master. Wczoraj działało (Sezon=Zima), dziś po zmianie na Lato bez slave ignoruje aktualizację.
+
+**Architektura slave Nano (przypomnienie z commit ba5ff0d):**
+- Slave nie ma własnego biegu (AERO reaguje globalnie)
+- Display slave pokazuje **sezon** kopiowany z mastera
+- Termostat i setpointy slave ma w EEPROM (zarządzanie wyłącznie z Nano)
+
+**Przyczyna:** w `esp02.yaml` lambda E3(29)_44 (oba triggery #2 i #14) miała **hardcoded `f[27]=0x01`** w default vector, **niezależnie od `g_season`**. Per PROTOCOL §3.3 E3 f[27] powinno mieć bity 3-4 dla sezonu (`0x08` Lato, `0x10` Chłodz) plus bit 5 (`0x20`) dla wietrzenia.
+
+E5(29) f[27] był prawidłowo dynamiczny (linia 602-605, mapowanie `0x00`/`0x0A`/`0x14`). E4(29) f[27] też dynamiczny (linia 440-444). **Tylko E3(29)_44 f[27] pozostał statyczny z domyślnego vectora** — przegapione przy implementacji sezonu.
+
+**Dlaczego nie zauważone wcześniej:** default value `0x01` przypadkowo odpowiada Sezon=Zima, więc dopóki user był w Zimie (większość czasu development) ramka była przypadkowo poprawna. Po zmianie na Lato bez (28.04) slave wykrył niezgodność: E4 f[27] bity 3-4 = `0x08` (Lato bez), E3 f[27] = `0x01` (twierdzi Zima). Slave odrzucił aktualizację.
+
+**Fix:** w obu triggerach E3(29)_44:
+
+```cpp
+uint8_t v27 = 0x01;
+if (id(g_season) == 1) v27 |= 0x08;        // Lato bez
+else if (id(g_season) == 2) v27 |= 0x10;   // Chłodzenie
+if (id(g_wietrz_on)) v27 |= 0x20;
+f[27] = v27;
+```
+
+Po flashu slave id=5 zaczął prawidłowo aktualizować sezon na display.
+
+**Lekcja:** każde pole które ma być dynamiczne (zależne od stanu user-controlled) powinno być explicitly ustawiane w lambdzie, nie zostawione na default vector. Statyczny default w `std::vector<uint8_t> f = {...}` jest pułapką gdy user zmieni odpowiednią konfigurację — bug pozostaje ukryty dopóki user nie odejdzie od domyślnego stanu.
+
 ## AERO desync — wymóg bitu `0x40` w E3(29)_44 f[28] (2026-04-28)
 
 **Objaw:** ESP master działał stabilnie ~17h od flasha 2026-04-27 22:40 (5200 odpowiedzi AERO E4(63)). Dziś o 15:32 PL counter `g_aero_resp_total` zatrzymał się — AERO przestał odpowiadać mimo że master cykl szedł dalej (`>>>` ramki w logu, zero `<<<`).
