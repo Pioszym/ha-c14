@@ -57,6 +57,26 @@ Co konkretnie wytrąciło AERO z sync między cyklem 2600 a 2601 — nieznane. E
 
 To zachowanie ("RX OK, TX off") dokładnie pasuje do hipotezy że AERO wymaga ramki "deterministycznej konfiguracji" (`f[28]` z bitem `0x40`) żeby **wznowić TX odpowiedzi** — nie jest to disconnect całego protokołu, tylko gating odpowiedzi.
 
+**Trop: setpointy poniżej Nano-min (eksperyment 2026-04-27 23:39-23:40):**
+
+User pamiętał że "zmienił procenty nawiewu poniżej 20%" co Nano normalnie blokuje (min 30%). DB potwierdza eksperyment — ale tylko częściowo:
+
+```
+23:39:44  wywiew_bieg_1: 32 → 29        (16s aktywne)
+23:39:49  wywiew_bieg_1: 29 → 30
+23:40:01  nawiew_bieg_1: 37 → 24        (16s aktywne, NAJNIŻSZA wartość w DB)
+23:40:17  nawiew_bieg_1: 24 → 29
+23:40:22  nawiew_bieg_1: 29 → 30
+```
+
+Najniższa zarejestrowana wartość: **nawiew_b1=24%** (poniżej Nano-min 30, ale powyżej 20). Wartości <20 brak w DB (recorder zapamiętuje pełne stany — jeśli user kliknął np. 15 i szybko cofnął, pewnie został złapany; możliwe że tylko subiektywnie pamięta "<20").
+
+**Important:** te niskie wartości były aktywne tylko **16s każda**. Od 23:40:22 wczoraj do 15:32:58 dziś (~16h) slidery B1 były z powrotem na 30/30, w tym czasie AERO wygenerował **5200 odpowiedzi normalnie**. Bezpośredniej kauzalności "niskie % → AERO stop" więc tu nie ma — AERO zamilkł 16h *po* eksperymencie.
+
+Hipotetyczna delayed reaction (np. "AERO licznik nieprawidłowych setpointów × cykle aż do timeout") — niepotwierdzone, brak dowodów. Otwarte do badania jeśli scenariusz się powtórzy.
+
+**Praktyczna lekcja:** trzymaj slidery `naw_b1` i `wyw_b1` **≥30%** (zgodnie z Nano-min). Niższe wartości technicznie wysyłają się przez RS-485, ale mogą prowadzić do nieprzewidzianych stanów AERO. Niski próg menu serwisowego Nano (30) to prawdopodobnie nie kaprys interfejsu, a fizyczne ograniczenie urządzenia.
+
 ## Config push do slave id=2 — Test1+Test2 (2026-04-26 22:41-23:29)
 
 Cel: zweryfikować strukturę ramki E4(29) src=0x2A (config push do slave id=2) — czy bajty są pre-cached w EEPROM mastera, czy generowane on-the-fly z bieżących nastaw.
