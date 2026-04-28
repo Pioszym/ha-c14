@@ -100,22 +100,20 @@ Capture po każdej zmianie: 1 cykl.
 
 ## Faza 3 — Wentylacja (6 stanów, głównie E4 f[28] + E5 f[28])
 
-Wentylacja=Stop / B1 / B2 / B3 / Wietrzenie / Harm-Urlop. Zmieniaj sekwencyjnie:
+Per PROTOCOL §5.3 menu Wentylacja Nano ma 6 opcji: **Harmonogram / Harm-Urlop / B3 / B2 / B1 / Stop**. (Wietrzenie to **osobne menu** Nano, overlay — testowane w F7, NIE w Wentylacji.)
+
+Zmieniaj sekwencyjnie:
 
 | Test | Zmiana | Oczekiwane DIFF |
 |------|--------|------------------|
 | T7 | B1 → **B2** | E4 f[28] bity 0-2: `0x03`→`0x05` (Master encoding) · E5 f[28] zmiana (kod UI) · E3 f[28] bity 0-2 zmiana |
 | T8 | B2 → **B3** | E4 f[28]: `0x05`→`0x07` · pozostałe analogicznie |
 | T9 | B3 → **Stop** | E4 f[28]: `0x07`→`0x01` |
-| T10 | Stop → **Wietrzenie** | E4 f[27] **+`0x20`** (wietrzenie ON) · E4 f[28] zmienia bieg na specjalny? · E5 f[28] kod Wietrzenia |
-| T11 | Wietrzenie → **Harm-Urlop** | E4 f[28] −`0x40` (clear stable) · E4 f[24] na `0x32` (unsynced) — patrz §4 PROTOCOL `g_harm_urlop` |
+| T10 | Stop → **Harmonogram** | E4 f[28] bieg ze slotu harmonogramu (np. `0x03` jeśli aktualny slot=B1) · zachowanie wg PROTOCOL §5.3: identyczne jak Manual+bieg_z_slotu (slave nie odróżnia) · zmienia się dynamicznie wraz z rotacją slotu |
+| T11 | Harmonogram → **Harm-Urlop** | E4 f[28] **−`0x40`** (clear stable, jeśli było SET) · E4 f[24] na `0x32` (unsynced) · bieg dalej rotuje wg harmonogramu — patrz §4 PROTOCOL `g_harm_urlop` |
 | T12 | Harm-Urlop → **B1** (powrót do baseline) | sprawdź pełen reset |
 
-**UWAGA Wietrzenie ON jest dwa różne tryby:**
-- **Wentylacja=Wietrzenie** — bieg systemowy (T10): wpływa na f[28] całkowicie
-- **Wietrzenie ON jako overlay** (osobne menu/przełącznik) — bit `f[27] 0x20` na bieżącym biegu, bez zmiany f[28] biegu
-
-Sprawdź w menu Nano czy są to dwa osobne ustawienia. Jeśli tak — F8 (osobno).
+**Note:** Wentylacja=Harmonogram i Wentylacja=Harm-Urlop oba **rotują bieg wg harmonogramu** (zmiana slotu eco z B1→B2 natychmiast zmienia `f[28]` z `0x03`→`0x05`). Różnią się tylko bitem `0x40` + `f[24]`. Capture po T10 i T11 musi trwać dłużej (~2-3 cykle minimum) by zaobserwować rotację albo wymusić zmianę slotu w Nano.
 
 ---
 
