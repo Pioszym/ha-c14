@@ -53,6 +53,10 @@ Slidery `number.*` mają `set_action: lambda: 'id(g_naw_b2) = x'` — zmieniają
 
 Co konkretnie wytrąciło AERO z sync między cyklem 2600 a 2601 — nieznane. ESPHome nie persystuje device-side logów do pliku, w bazie HA brak anomalii poprzedzających 15:32:58 (T-sensory gładkie, brak rebootów, brak warningów). Ostatnia odpowiedź AERO bajt po bajcie zwykła. Możliwe że AERO ma własny watchdog/timeout który okazjonalnie powoduje przejście w "service state" — wtedy wymóg bitu `0x40` wraca w grę.
 
+**Selektywny silent mode (potwierdzone obserwacją usera):** o 15:33:46 user zmienił bieg w UI na "Bieg 2" — wentylator fizycznie zareagował (zmiana obrotów). Czyli AERO **nadal przyjmował komendy** z E4(29) src=0x21 (RX OK), tylko **przestał odpowiadać** ramką E4(63) na trigger E3(29)_44 (TX off). User nie zorientował się od razu o problemie — komenda biegu działała normalnie, tylko T-sensory i `Nawiew %` zamarzły w HA.
+
+To zachowanie ("RX OK, TX off") dokładnie pasuje do hipotezy że AERO wymaga ramki "deterministycznej konfiguracji" (`f[28]` z bitem `0x40`) żeby **wznowić TX odpowiedzi** — nie jest to disconnect całego protokołu, tylko gating odpowiedzi.
+
 ## Config push do slave id=2 — Test1+Test2 (2026-04-26 22:41-23:29)
 
 Cel: zweryfikować strukturę ramki E4(29) src=0x2A (config push do slave id=2) — czy bajty są pre-cached w EEPROM mastera, czy generowane on-the-fly z bieżących nastaw.
