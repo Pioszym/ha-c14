@@ -11,9 +11,9 @@ Plan systematycznego testu cyklu Master Mini z **Nano jako master** (mniej ramek
 ## Setup
 
 **Hardware:**
-- Nano Color CTP w trybie **MASTER MINI** (menu serwisowe: TRYB W SIECI C14 = MASTER MINI)
+- Nano Color CTP (id=1) w trybie **MASTER MINI** (menu serwisowe: TRYB W SIECI C14 = MASTER MINI)
 - ESP32 esp02 jako **observer**: Rola=OFF, Forward=ON (passive bridge), `log_nano`=ON, `log_aero`=ON
-- Nano slave id=5 odpięty (żeby nie zakłócał jako emiter dodatkowych ramek) — ALBO: zostawiony dla weryfikacji syncu sezonu/zegara, ale wtedy filtruj `[NANO>] f[1]==0x21` od f[3]==0x2D z parsera
+- Wszystkie VS (Virtual Slaves) w ESP wyłączone (`switch.c14_master_vs_id_2..5 = off`) — żeby nie odpowiadały na ewentualne wake-up'y Nano-mastera w bus i nie generowały dodatkowych ramek
 
 **Capture:**
 ```bash
