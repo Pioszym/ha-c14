@@ -33,6 +33,26 @@ Pierwszy fix dotykał tylko #2 — po flashu AERO odpowiedział na #2 ale w Mast
 
 **Lekcja:** "konwencja Nano" (bit `0x40` zależny od trybu termostatu) NIE jest tym samym co "wymaganie AERO" (bit `0x40` zawsze). Master implementacja powinna trzymać bit SET niezależnie od logicznego trybu, żeby uniknąć desync śmierci po dłuższej przerwie. Aktualizacja PROTOCOL §3.3 — patrz tabela f[28] z uwagą o bit `0x40`.
 
+**Timeline z HA recorder DB (post-mortem, czas lokalny PL):**
+
+```
+15:32:49  C14 Cycles 2600                                ← cykl szedł normalnie
+15:32:51  number nawiew_bieg_2 → 37.0 (slider)           ← user zaczyna spam-edycję
+15:32:56  number wywiew_bieg_2 → 38.0
+15:32:58  C14 AERO Responses 5200                        ← OSTATNIA odpowiedź AERO
+15:32:59  number wywiew_bieg_2 → 35.0 (korekta)
+15:33:09  C14 Cycles 2601                                ← cykl bez odpowiedzi
+15:33:09  bus_naw_b2=37, bus_wyw_b2=35 (z nowego E3#44)
+15:33:14  number nawiew_bieg_3 → 45.0 (kolejne korekty)
+15:33:46  select wentylacja → "Bieg 2"                   ← zmiana biegu PO zamilknięciu
+15:33:55  Bus: Bieg aktualny → "Bieg 2"
+... AERO już nie odpowiada
+```
+
+Slidery `number.*` mają `set_action: lambda: 'id(g_naw_b2) = x'` — zmieniają tylko globalną, nie wywołują TX ramki. Następny cykl master_cycle wysyła E3#44 z nowymi wartościami w normalnym slocie. Bezpośrednia kolizja TX-podczas-odpowiedzi-AERO wykluczona. Zmiana biegu (B1→B2) nastąpiła **57s PO** zatrzymaniu AERO — konsekwencja, nie przyczyna.
+
+Co konkretnie wytrąciło AERO z sync między cyklem 2600 a 2601 — nieznane. ESPHome nie persystuje device-side logów do pliku, w bazie HA brak anomalii poprzedzających 15:32:58 (T-sensory gładkie, brak rebootów, brak warningów). Ostatnia odpowiedź AERO bajt po bajcie zwykła. Możliwe że AERO ma własny watchdog/timeout który okazjonalnie powoduje przejście w "service state" — wtedy wymóg bitu `0x40` wraca w grę.
+
 ## Config push do slave id=2 — Test1+Test2 (2026-04-26 22:41-23:29)
 
 Cel: zweryfikować strukturę ramki E4(29) src=0x2A (config push do slave id=2) — czy bajty są pre-cached w EEPROM mastera, czy generowane on-the-fly z bieżących nastaw.
