@@ -41,12 +41,16 @@ Capture w tle, do pliku. Zapisuje wszystkie ramki na bus (ESP w roli OFF tylko n
 
 W tej fazie **NIE analizuję na bieżąco** — tylko markeruję log i prowadzę kolejność. Analiza idzie szybciej, capture trwa nieprzerwanie.
 
-**Faza B — analiza po sesji:**
+**Faza B — analiza po sesji (defensive verification):**
 
 1. Po wykonaniu wszystkich testów (lub gdy chcesz zakończyć sesję) — pobieram pełny log
 2. Analizuję **test po teście**: dla każdego markera czytam **wszystkie ramki w 5+ cyklach po markerze**, porównuję bajt po bajcie z baseline (lub poprzednim testem)
-3. Generuję raport DIFF z wnioskami dla każdego testu
-4. Aktualizuję PROTOCOL.md z potwierdzonymi mappingami
+3. Generuję raport DIFF z wnioskami dla każdego testu w formacie:
+   - **Zgodne z PROTOCOL.md** ✓ (potwierdzone empirycznie)
+   - **Niezgodne / niekompletne** ⚠ (rzeczywiste bity ≠ doc, lub doc nie pokrywa zaobserwowanej kombinacji)
+   - **Nowe odkrycia** 🔍 (zachowanie nieopisane w doc, np. nowy bit, nieoczekiwana interakcja)
+4. Wszystkie ⚠ i 🔍 trafiają do osobnej sekcji **"Do poprawy w PROTOCOL.md"** na końcu raportu — **lista propozycji**, nie auto-update
+5. **Decyzję o aktualizacji PROTOCOL.md podejmujesz Ty** po przejrzeniu listy — ja nie ruszam doc bez Twojego potwierdzenia
 
 **Dlaczego ≥5 cykli między testami:**
 - Master Mini ma 8.5s/cykl, 5 cykli = ~45s
@@ -312,7 +316,9 @@ MX4 Programy×wszystko → MX6 Aktywny SP cross-table
   ↓
 MX5 Bypass×Sezon (sanity)
   ↓
-Aktualizacja PROTOCOL.md z potwierdzonymi mappingami
+Faza B: analiza pełnego logu test po teście
+  ↓
+Raport DIFF + lista "Do poprawy w PROTOCOL.md" (manual review)
 ```
 
-Każda faza ~10-30 minut realnego czasu (zmiana + 5 cykli + analiza). Pełna sesja: ~3-4h.
+Każdy test capture ~45-60s (zmiana + 5 cykli). Pełna sesja capture: ~1.5-2h. Faza B (analiza) — osobna sesja po zakończeniu, ~1h.
