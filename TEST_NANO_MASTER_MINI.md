@@ -279,6 +279,29 @@ Tabela do potwierdzenia (każdy wiersz to mała sesja 5+ cykli):
 
 ---
 
+## Bajty synchronizacji — osobny tracking w analizie
+
+W każdej fazie/teście Faza B raportuje **dodatkową sekcję** z zachowaniem bajtów synchronizacji master ↔ AERO ↔ slave. To pola które **nie są bezpośrednio sterowane przez user'a**, ale mogą zmieniać się reaktywnie:
+
+| Pole | Ramka | Rola | Co śledzić |
+|------|-------|------|-----------|
+| **`f[5]`** | E4(29) src=0x21 | AERO_OK heartbeat (bit `0x40`) + Programy=Poza domem (bit `0x04`) | Czy `0x40` zawsze SET? Czy gaśnie kiedykolwiek? Czy `0x04` reaguje tylko na MX4a? |
+| **`f[24]`** | E4(29) src=0x21 | Sync flag (`0x32`/`0x64`) — paruje z f[28] bit `0x40` | Czy zawsze koreluje z f[28]? Stany rozbieżne (`0x64` ale brak `0x40`)? |
+| **`f[25-26]`** | E4(29) src=0x21 | Rotator daty (faza/wartość) | Czy rotuje co cykl? Wartości 00/01/02/03 → rok/miesiąc/dzień. W Mini stała czy też rotuje? |
+| **`f[10]`** | E4(29) src=0x21 | Default `0x7E`, ale historycznie obserwowane `0x08` przy fan OFF (PROTOCOL §7) | Czy reaguje na Wentylacja=Stop? |
+| **`f[5]`** | AERO E4(63) | AERO source flags | Czy kopiuje f[5] mastera czy ma własne wartości? |
+| **`f[27]`** | AERO E4(63) | Status bypass mechaniczny | Czy zmienia się 1:1 z E5 f[25] bypass cmd? Z jakim opóźnieniem? |
+| **`f[24-25]`** | AERO E4(63) | naw% / wyw% aktualne (PROTOCOL §3.4) | Czy reaguje natychmiast na zmianę biegu / setpointu %? Z jakim opóźnieniem? |
+
+Te bajty NIE są inputem (user ich nie zmienia), ale są **outputami sync'u systemu**. Analiza pokaże:
+- Czy są stabilne w stanach pasywnych (przed zmianą)
+- Czy zmieniają się reaktywnie po zmianie input parametru
+- Czy są jakieś niezdokumentowane korelacje (np. f[24] zmienia się przy Sezon, mimo że PROTOCOL mówi że tylko Termostat+korekta)
+
+W raporcie Faza B każdy test ma 2 sekcje:
+1. **Pola sterujące** (input — zmienione przez user'a) — zwykły DIFF
+2. **Bajty synchronizacji** — czy reagowały na zmianę, czy są stabilne, czy są niespodzianki
+
 ## Lista pytań otwartych do potwierdzenia
 
 1. **E5 f[28] kod UI** — pełna macierz Termostat × Sezon × Bieg × Programy × Wentylacja
@@ -291,6 +314,8 @@ Tabela do potwierdzenia (każdy wiersz to mała sesja 5+ cykli):
 8. **Bypass: czas reakcji AERO** — zmierz dokładnie w MX5
 9. **Slot harmonogramu Termostatu** — czy zmiana slotu (Comfort↔Eco) widoczna w E4 f[14-15]?
 10. **Programy=Urlop dominacja** — MX4e potwierdź że Wentylacja jest ignorowana
+11. **f[5] AERO_OK** — czy kiedykolwiek gaśnie podczas testu? Po naszym fixie (sticky `0x40`) powinno być stale SET; czy któraś kombinacja ujawnia problem?
+12. **AERO E4(63) f[24-25]** — opóźnienie reakcji naw%/wyw% na zmianę biegu (T7-T9) i setpointu % (E3#44 f[20-25])
 
 ---
 
