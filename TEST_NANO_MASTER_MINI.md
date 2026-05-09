@@ -162,13 +162,48 @@ Menu Nano: **Harmonogram / Harm-Urlop / B3 / B2 / B1 / Stop**. Wietrzenie to oso
 | T11 | Harmonogram → **Harm-Urlop** | E4 f[28] bez zmiany w bieg, ale **−`0x40`** (jeśli Manual) lub +flag § PROTOCOL · f[24] zachowanie |
 | T12 | Harm-Urlop → **B1** (powrót) | reset |
 
-## Faza 4 — Bypass (3 stany, E5 f[25])
+## Faza 4 — Bypass (rozbudowane — priorytet WYSOKI)
 
-| Test | Zmiana | Oczekiwane DIFF |
-|------|--------|------------------|
-| T13 | AUTO (`0x61`) → **OFF** | E5 f[25] →`0x60` · po ~5s AERO E4(63) f[28] →`0x40` (zamknięty) |
-| T14 | OFF → **ON** | E5 f[25] →`0x62` · AERO f[28] →`0x60` (otwarty) |
-| T15 | ON → **AUTO** (powrót) | E5 f[25] →`0x61` |
+**Kontekst:** obserwacja 2026-05-03: bypass nie zmieniał stanu zgodnie z oczekiwaniem przy ręcznych komendach + Nano master w Chłodzeniu autonomicznie otwierał bypass (free-cooling). Możliwe że źle interpretujemy bajty lub auto-bypass nadpisuje komendę.
+
+**Wymóg:** Sezon=**Zima** (żeby auto-bypass nie zaburzał — w Zimie AERO nie otwiera autonomicznie).
+
+### Faza 4a — Komenda manualna w Zimie (kiedy auto-bypass nieaktywny)
+
+| Test | Zmiana | Oczekiwane (wg PROTOCOL §3.7) | Co mierzymy |
+|------|--------|------------------------------|-------------|
+| T13 | AUTO (`0x61`) → **OFF** | E5 f[25] →`0x60` · po ~5s AERO E4(63) f[28] →`0x40` (zamknięty) | komenda → reakcja AERO; czas reakcji |
+| T14 | OFF → **ON** | E5 f[25] →`0x62` · AERO f[28] →`0x60` (otwarty) | komenda → reakcja AERO |
+| T15 | ON → **AUTO** | E5 f[25] →`0x61` · AERO decyduje (w Zimie zwykle zamknięty) | sprawdź czy AUTO w Zima = zawsze zamknięty |
+| T15b | AUTO → **OFF → AUTO → ON → AUTO → OFF** (szybka sekwencja, ~10s każda) | każda zmiana w E5 f[25]; AERO może gubić zmiany | test responsywności / debounce |
+
+### Faza 4b — Auto-bypass w Chłodzeniu (NOWE — kluczowy test)
+
+**Wymóg:** Sezon=**Chłodzenie**, Termostat=Manual, Manual setpoint < temp pokojowa (żeby chłodzenie było aktywne).
+
+| Test | Setup | Akcja | Co sprawdzić |
+|------|-------|-------|--------------|
+| T15c | Sezon=Chłodzenie, Bypass=**AUTO** | Czekaj 5+ minut, monitoruj AERO E4(63) f[28] | Czy AERO sam otwiera (`0x40`→`0x60`) bez zmiany komendy w E5? |
+| T15d | Bypass=AUTO, AERO bypass otwarty (po T15c) | Zmień Bypass na **OFF** | Czy AERO zamyka (komenda nadpisuje auto)? Jak szybko? |
+| T15e | OFF → AUTO (Chłodz, ciepło) | obserwuj | Czy AERO znów otwiera autonomicznie? |
+| T15f | Bypass=AUTO, AERO bypass otwarty | Zmień Sezon na **Zima** (Bypass dalej AUTO) | Czy AERO zamyka po zmianie sezonu (auto-bypass dezaktywowany)? |
+
+**Co mierzyć poza E5 f[25] i E4(63) f[28]:**
+- Pozostałe pola E4(63) — czy `f[20-23]=7E,00,00,00` ma jakiś wskaźnik auto vs manual? Snapshot 22 typów ramek przed/po jak w teście schedule (HISTORY 2026-04-26)
+- Czy E5 f[25] **automatycznie się zmienia** (może Nano master tylko proxy'uje decyzję AERO)? Jeśli komenda E5=AUTO, ale Nano widzi że AERO otwarło, czy przepisuje E5=ON? Lub utrzymuje AUTO i tylko czyta stan z E4(63)?
+- Czas reakcji: timestamp E5 zmiany vs timestamp pierwszej E4(63) z nowym `f[28]` — w T13/T14 vs T15d (manual override w Chłodz vs Zima)
+
+### Faza 4c — Hipotezy do weryfikacji
+
+1. `f[25]` w E5 = **komenda usera** (wg menu Bypass), nie zmienia się autonomicznie. Auto-bypass to decyzja AERO ujawniona tylko w E4(63) `f[28]`. ✓ — jeśli T15c pokaże E5 f[25]=`0x61` stałe, ale E4(63) f[28] zmienia się autonomicznie.
+2. `f[25]=0x61` (AUTO) → AERO ma autorytet decyzji (otwiera w Chłodz, zamyka w Zima)
+3. `f[25]=0x60` (OFF) → komenda nadpisuje auto (zawsze zamknięty)
+4. `f[25]=0x62` (ON) → komenda nadpisuje auto (zawsze otwarty)
+5. **Alternatywna hipoteza:** może Nano master zmienia E5 f[25] z AUTO na ON gdy widzi że AERO otworzyło — wtedy `0x61` w naszym ESP master nie wystarczy do free-cooling, trzeba implementować watchdog (czytaj E4(63), aktualizuj E5 f[25])
+
+### Wracaj na koniec Faza 4 do baseline
+
+Sezon=Zima, Bypass=AUTO. Następna faza powinna zacząć z czystym stanem.
 
 ## Faza 5 — Setpointy temperatur (E5 f[8-17])
 
@@ -249,14 +284,15 @@ Pytanie: które kombinacje Programy nadpisują Wentylacja/Termostat/Sezon?
 | MX4d | Programy: Poza domem → **Urlop** | f[28] = `0x40` (sam stable, validity=0) · wentylator Stop · f[5] −`0x04` |
 | MX4e | Programy=Urlop | zmień Wentylacja=B1 → B3 | czy Wentylacja ignorowana? f[28] dalej `0x40`? |
 
-## MIX 5 — Bypass × Sezon (priorytet: NISKI — sanity check)
+## MIX 5 — Bypass × Sezon
 
-Pytanie: czy bypass jest niezależny od sezonu (powinien być).
+Komenda E5 f[25] **niezależna** od sezonu (3 enum), ale **stan AERO** w E4(63) f[28] może zależeć (auto-bypass w Chłodz). Szczegółowe testy w Faza 4b. Tu sanity check że enum bypass komenda nie zmienia formatu.
 
 | Test | Setup | Zmiana | Oczekiwane |
 |------|-------|--------|------------|
 | MX5a | Sezon=Zima | Bypass AUTO → **ON** | E5 f[25] →`0x62` · AERO f[28] →`0x60` |
-| MX5b | Sezon=Chłodzenie | Bypass AUTO → **ON** | identyczne kody co MX5a (sezon nie wpływa na bypass enum) |
+| MX5b | Sezon=Chłodzenie | Bypass AUTO → **ON** | E5 f[25] →`0x62` (identyczne) · AERO f[28] →`0x60` |
+| MX5c | Sezon=Lato bez | Bypass AUTO → **ON** | jak MX5a/b (komenda enum stała) |
 
 ## MIX 6 — Aktywny setpoint cross-table (priorytet: WYSOKI)
 

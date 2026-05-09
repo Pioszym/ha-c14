@@ -4,8 +4,10 @@ id_markers_*.txt
 night_logs/
 night_scan.sh
 packages/
-secrets.yaml
+*.yaml
+!esp02.yaml
 *.swp
 .DS_Store
-esp02.yaml.bak
 CLAUDE.md
+.esphome/
+.claude/
