@@ -1,0 +1,235 @@
+﻿=== T0: BASELINE F0 ustawiony @ 2026-05-10 12:49:06 ===
+Setup: Sezon=Zima, Termostat=Harm, Wentylacja=B1, Wietrz=OFF, Bypass=AUTO, Programy=Normal, Master Mini
+Setpointy: Comfort=23.0 / Eco_Z=20.0 / Eco_C=18.0 / Manual=25.0 / Poza=16.0
+Aktywny SP (Harm slot): 20.0 (Eco zima)
+VS off (id=2..5)
+Reprezentatywne ramki cyklu (12:47:10..12:47:19, cykl 8.5s):
+  #01 E4 [E4,21,72,29,0A,40,00,06,0C,2F,7E,00,11,16,11,18,7E,7E,7E,7E,7E,7E,7E,14,64,01,1A,00,43,23]
+  #02 E3 [E3,44,28,29,32,00,05,0A,28,1C,2A,1E,01,17,1E,1E,18,14,00,24,20,23,22,23,25,23,20,01,53,23]
+  AERO  [E4,21,65,63,09,74,00,3C,00,00,10,48,10,48,11,1C,10,74,11,2B,7E,00,00,00,23,20,01,02,40,23]
+  #05 E5 [E5,21,18,29,00,00,10,48,11,36,11,18,11,04,11,4A,10,70,00,30,7E,00,7E,00,00,61,00,00,01,23]
+Obserwacje do analizy:
+  - E4 f[28] bit 0x40 (stable) SET przy Termostat=Harm + Wentylacja=B1 (manualnie wybrany bieg). PROTOCOL §3.2 mowi ze stable=Manual; tu hipoteza: 0x40 = manualny bieg z menu Wentylacja, niezalezne od Termostatu.
+  - E5 f[6-7]=0x10,0x48 = 12.0 = mirror AERO Czerpnia? Pole nie ujete w md tabeli setpointow.
+
+=== T1: Sezon Zima -> Lato bez @ 2026-05-10 12:50:33 ===
+
+T1 wynik (DIFF F0->T1, ramki ~12:51:34):
+  Zgodne z md/PROTOCOL:
+    E4 f[27] 0x00->0x08 (Sezon=Lato bez bit)
+    E3 f[27] 0x01->0x09
+    E5 f[27] 0x00->0x0A
+  NOWE OBSERWACJE:
+    1. AERO E4(63) f[28] 0x40->0x60 (auto-bypass otwarty po zmianie Sezon->Lato bez, mimo E5 f[25]=0x61 AUTO niezmienne)
+       => Faza 4b hipoteza poszerzona: auto-bypass dziala w Lato bez, nie tylko w Chlodzeniu
+    2. E4 f[28] 0x43->0x03 (utracony bit 0x40 stable). Hipoteza: stable wymaga Sezon=Zima (sprzeczne z PROTOCOL paragraf 3.2 ktory mowi ze stable=Termostat=Manual)
+    3. E4 f[24] 0x64->0x32 (sync level 100->50, niespodziewana zmiana w master broadcast)
+    4. E4 f[14-15] 0x11:18->0x11:04 (aktywny SP 20.0->18.0): slot Harm wybral Eco_chlodz mimo Sezon=Lato bez (nie Chlodzenie)
+    5. E5 f[6-7] mirror AERO Czerpnia (potwierdzone: f[6-7]=AERO f[10-11], 12.0->12.2)
+  Reprezentatywne ramki T1:
+    E4 [E4,21,69,29,0A,40,00,06,0C,33,7E,00,11,1B,11,04,7E,7E,7E,7E,7E,7E,7E,14,32,02,05,08,03,23]
+    E3 [E3,44,70,29,32,00,05,0A,28,1C,2A,1E,01,17,1E,1E,18,14,00,24,20,23,22,23,25,23,20,09,13,23]
+    E5 [E5,21,24,29,00,00,10,4A,11,36,11,18,11,04,11,4A,10,70,00,30,7E,00,7E,00,00,61,00,0A,01,23]
+    AERO [E4,21,7F,63,09,74,00,3C,00,00,10,4A,10,4A,11,12,10,74,11,2B,7E,00,00,00,23,20,01,02,60,23]
+
+=== T2: Sezon Lato bez -> Chlodzenie @ 2026-05-10 12:54:04 ===
+
+T2 wynik (DIFF T1->T2, ramki ~12:54:49):
+  Zgodne z md:
+    E4 f[27] 0x08->0x10 (Chlodz bit)
+    E3 f[27] 0x09->0x11
+    E5 f[27] 0x0A->0x14
+    E4 f[28] 0x03->0x0B (+0x08 Chlodz overlay na B1)
+  NOWE / BONUS:
+    1. E3 f[28] tez dostaje +0x08 overlay (0x13->0x1B). md/PROTOCOL paragraf 3.2 mowil tylko o E4.
+    2. AERO E4(63) f[28]=0x60 bez zmian (bypass dalej otwarty - auto kontynuowany z T1).
+    3. SYNC LEVEL GRADIENT: f[24] schodzi cumulatywnie z kazdym sezonem
+       F0 (Zima): 0x64 (100%)
+       T1 (Lato bez): 0x32 (50%)
+       T2 (Chlodz): 0x00 (0%)
+       Trzecia wartosc poza PROTOCOL 0x32/0x64. Trend cumulative, sprawdzimy T3 (powrot Zima) czy wraca do 100.
+    4. Aktywny SP f[14-15]=11:04 (18.0 Eco_chlodz) bez zmian. Slot Harm Lato bez=Chlodz=Eco_chlodz.
+  Ramki T2:
+    E4 [E4,21,62,29,0A,40,00,06,0C,36,7E,00,11,1F,11,04,7E,7E,7E,7E,7E,7E,7E,14,00,01,1A,10,0B,23]
+    E3 [E3,44,00,29,32,00,05,0A,28,1C,2A,1E,01,17,1E,1E,18,14,00,24,20,23,22,23,25,23,20,11,1B,23]
+    E5 [E5,21,2C,29,00,00,10,48,11,36,11,18,11,04,11,4A,10,70,00,30,7E,00,7E,00,00,61,00,14,01,23]
+    AERO [E4,21,71,63,09,74,00,3C,00,00,10,48,10,48,11,03,10,79,11,2B,7E,00,00,00,23,20,01,02,60,23]
+
+=== T3: Sezon Chlodzenie -> Zima @ 2026-05-10 12:56:36 ===
+
+=== T4: Termostat Harm -> Manual @ 2026-05-10 12:57:56 ===
+
+=== T5: Termostat Manual -> Urlop @ 2026-05-10 12:58:57 ===
+
+=== T6: Termostat Urlop -> Harm (powrot F0) @ 2026-05-10 12:59:44 ===
+
+=== T7: Wentylacja B1 -> B2 @ 2026-05-10 13:00:25 ===
+
+=== T8: Wentylacja B2 -> B3 @ 2026-05-10 13:01:02 ===
+  [obs] T8 (B2->B3) mial wyrazny delay w fizycznej reakcji silnikow AERO
+
+=== T9: Wentylacja B3 -> Stop @ 2026-05-10 13:01:28 ===
+  [obs] AERO silniki fizycznie zgasly @ 2026-05-10 13:02:12 (lag ~44s od T9 komendy)
+
+=== T10: Wentylacja Stop -> Harmonogram @ 2026-05-10 13:04:58 ===
+
+=== T11: Wentylacja Harmonogram -> Harm-Urlop @ 2026-05-10 13:05:56 ===
+
+=== T12: Wentylacja Harm-Urlop -> B1 (powrot F0) @ 2026-05-10 13:06:39 ===
+
+=== T13: Bypass AUTO -> OFF (Zima) @ 2026-05-10 13:07:34 ===
+
+=== T14: Bypass OFF -> ON (Zima) @ 2026-05-10 13:08:15 ===
+
+=== T15: Bypass ON -> AUTO (Zima) @ 2026-05-10 13:09:13 ===
+
+=== T15b/1: Bypass AUTO -> OFF (szybka sekwencja, ~10s/krok) @ 2026-05-10 13:10:31 ===
+=== T15b/2: Bypass OFF -> AUTO @ 2026-05-10 13:10:44 ===
+=== T15b/3: Bypass AUTO -> ON @ 2026-05-10 13:11:14 ===
+=== T15b/4: Bypass ON -> AUTO @ 2026-05-10 13:11:45 ===
+=== T15b/5: Bypass AUTO -> OFF (koniec sekwencji T15b) @ 2026-05-10 13:12:19 ===
+
+=== T15c SETUP: Sezon=Chlodzenie + Termostat=Manual + Bypass=AUTO @ 2026-05-10 13:13:56 ===
+Faza 4b kluczowy test - obserwacja czy AERO sam otwiera bypass (auto-bypass).
+Manual SP=25.0 (uwaga: jesli T_pok < 25, chlodzenie nieaktywne wg setpointu - ale AERO moze
+otworzyc bypass na podstawie roznicy outdoor/indoor niezaleznie - patrz T1 gdzie sam otworzyl
+przy Lato bez bez zmiany SP).
+Czekaj **5+ minut** (md), monitor AERO E4(63) f[28] vs E5 f[25].
+  [setpoint] Manual SP: 25.0 -> 19.3 (T_pok=21.8 - chlodzenie aktywne) @ 2026-05-10 13:15:38
+  [obs natychmiast] Nano panel: chlodzenie aktywne + bypass status='ON' (otwarty) @ 2026-05-10 13:16:31 - AERO zareagowal natychmiast po zmianie SP=19.3 (T15c hipoteza potwierdzona w pierwszym podejsciu)
+
+=== T15d: Bypass AUTO -> OFF (Chlodz, AERO byp byl otwarty auto) @ 2026-05-10 13:17:17 ===
+  [obs] Nano panel: bypass status='OFF' (zamkniety) @ 2026-05-10 13:17:56 - komenda OFF nadpisala auto-decyzje AERO mimo aktywnego cooling demand (Manual=19.3 < T_pok=21.8). T15d hipoteza 4c.3 potwierdzona.
+
+=== T15e: Bypass OFF -> AUTO (Chlodz, cooling demand aktywne) @ 2026-05-10 13:18:49 ===
+  [obs] Nano panel: bypass status='ON' (otwarty) @ 2026-05-10 13:19:14 - AERO znow otworzyl autonomicznie po AUTO. T15e hipoteza 4c.2 potwierdzona (AUTO+Chlodz+cooling_demand -> AERO otwiera).
+
+=== T15f: Sezon Chlodzenie -> Zima (Bypass dalej AUTO) @ 2026-05-10 13:20:11 ===
+  [obs] Nano panel: bypass status='OFF' (zamkniety) @ 2026-05-10 13:20:11 - po zmianie Sezon Chlodz->Zima
+        AERO zamknal autonomicznie mimo Bypass=AUTO i wczesniej aktywnego cooling demand.
+        Hipoteza 4c.2 potwierdzona: AUTO+Zima -> AERO zamyka (auto-bypass dezaktywowany w Zimie).
+
+=== POWROT DO BASELINE F0 (Faza 4 koniec) @ 2026-05-10 13:22:11 ===
+  Sezon=Zima, Termostat=Harm, Bypass=AUTO. T_zadana=20.0 (Eco zima slot).
+  Wentylacja=B1, Wietrz=OFF (zaklada sie ze nie ruszone od T12).
+  Manual SP nadal 19.3 (z T15c) - nieistotne bo Harm uzywa Eco_zima.
+
+=== T16: Comfort 23.0 -> 22.5 @ 2026-05-10 13:23:44 ===
+
+=== T17: Comfort 22.5 -> 23.0 (reset) @ 2026-05-10 13:24:14 ===
+
+=== T18: Eco zima 20.0 -> 19.5 @ 2026-05-10 13:24:45 ===
+
+=== T19: Eco zima 19.5 -> 20.0 (reset) @ 2026-05-10 13:25:10 ===
+
+=== T20: Eco chlodz 18.0 -> 17.5 @ 2026-05-10 13:25:36 ===
+
+=== T21: Eco chlodz 17.5 -> 18.0 (reset) @ 2026-05-10 13:26:01 ===
+
+=== T22: Manual 19.3 -> 18.8 @ 2026-05-10 13:26:27 ===
+
+=== T23: Manual 18.8 -> 19.3 (reset) @ 2026-05-10 13:26:57 ===
+
+=== T24: Poza 16.0 -> 15.5 @ 2026-05-10 13:27:44 ===
+
+=== T25: Poza 15.5 -> 16.0 (reset, koniec Fazy 5) @ 2026-05-10 13:28:11 ===
+
+=== T30: Wietrzenie OFF -> ON @ 2026-05-10 13:29:05 ===
+
+=== T31: Wietrzenie ON -> OFF (reset, koniec Fazy 7) @ 2026-05-10 13:29:29 ===
+
+=== MX1a: Went=Harmonogram + Sezon Zima->Chlodzenie @ 2026-05-10 13:31:22 ===
+
+=== MX1b: Went Harmonogram -> Harm-Urlop (Sezon=Chlodz) @ 2026-05-10 13:32:07 ===
+
+=== MX1c SETUP: Went Harm-Urlop->B1 + Sezon Chlodz->Lato bez @ 2026-05-10 13:33:17 ===
+
+=== MX1c: Sezon Lato bez -> Chlodzenie (Went=B1) @ 2026-05-10 13:34:03 ===
+
+=== MX1d SETUP: Went B1->Stop + Sezon Chlodz->Lato bez @ 2026-05-10 13:35:02 ===
+
+=== MX1d: Sezon Lato bez -> Chlodzenie (Went=Stop) @ 2026-05-10 13:35:58 ===
+  [uwaga] Went=Stop + Chlodz overlay - sprawdzic czy f[28] = 0x01|0x08 = 0x09 (md hipoteza),
+          czy moze cos innego. Nieoczywisty przypadek (Stop+Chlodz nie ma sensu w UI).
+
+=== MX2a SETUP: Term Harm->Manual + Went Stop->B1 (Sezon=Chlodz) @ 2026-05-10 13:36:51 ===
+
+=== MX2a: Went B1 -> Harmonogram (Term=Manual, Sezon=Chlodz, Harm slot aktualnie B2) @ 2026-05-10 13:37:41 ===
+
+=== MX2b: Went Harmonogram -> Harm-Urlop (Term=Manual, panel pokazuje dalej B2) @ 2026-05-10 13:38:25 ===
+
+=== MX2c SETUP: Term Manual->Harm + Went Harm-Urlop->B1 (Sezon=Chlodz) @ 2026-05-10 13:39:20 ===
+
+=== MX2c: Went B1 -> Harmonogram (Term=Harm, Sezon=Chlodz) @ 2026-05-10 13:40:05 ===
+
+=== MX2d SETUP: Term Harm->Urlop + Went Harmonogram->B1 (Sezon=Chlodz) @ 2026-05-10 13:40:51 ===
+
+=== MX2d: Went B1 -> Harm (Term=Urlop, Sezon=Chlodz - test czy Urlop dominuje) @ 2026-05-10 13:41:20 ===
+
+=== MX3a SETUP: Term Urlop->Manual + Went Harm->B2 (Sezon=Chlodz, Wietrz=OFF) @ 2026-05-10 13:42:02 ===
+
+=== MX3a: Wietrz OFF->ON (Sezon=Chlodz, Term=Manual, Went=B2) @ 2026-05-10 13:42:26 ===
+
+=== MX3b SETUP: Term Manual->Harm + Went B2->B1 + Sezon Chlodz->Lato bez + Wietrz ON->OFF @ 2026-05-10 13:43:42 ===
+
+=== MX3b: Wietrz OFF->ON (Sezon=Lato bez, Term=Harm, Went=B1) @ 2026-05-10 13:44:03 ===
+
+=== MX3c SETUP: Term Harm->Urlop + Sezon Lato bez->Zima + Wietrz ON->OFF @ 2026-05-10 13:44:47 ===
+
+=== MX3c: Wietrz OFF->ON (Sezon=Zima, Term=Urlop, Went=B1 - test dozwolone w Urlop) @ 2026-05-10 13:45:10 ===
+
+=== MX3d: Went B1->Harm-Urlop (Wietrz=ON, Sezon=Zima, Term=Urlop) @ 2026-05-10 13:46:05 ===
+
+=== MX4a SETUP: Term Urlop->Harm + Went Harm-Urlop->B1 + Wietrz ON->OFF (Sezon=Zima, Programy=Normal) @ 2026-05-10 13:46:45 ===
+
+=== MX4a: Programy Normal->Poza domem (Sezon=Zima, Term=Harm, Went=B1) @ 2026-05-10 13:47:32 ===
+
+[FINDING: Programy lock] Nano UI: gdy Programy != Normal (np. Poza domem),
+  Termostat / Wentylacja / Wietrzenie sa NIEAKTYWNE w menu (zablokowane przez UI).
+  Konsekwencja: MX4b (zmiana Went w Poza), MX4c (Sezon w Poza), MX4e (Went w Urlop)
+  nie sa wykonalne tym samym sposobem - obserwator nie moze zmienic tych pol
+  bez wyjscia do Programy=Normal.
+  Implikacja protokolu: Programy=Normal/Poza/Urlop to "tryb master" ktory zarzadza
+  tymi polami; user nie moze ich nadpisac niezaleznie. Mozna by ewentualnie
+  obserwowac jak Programy autonomicznie zmienia te pola w czasie (np. Urlop
+  prawdopodobnie wymusza Wentylacja=Stop).
+  PRZESKAKUJEMY do MX4d (Programy Poza->Urlop) - jedyna mozliwa zmiana.
+  [obs] AERO wentylatory STOP w trakcie MX4a (Programy=Poza domem) @ 2026-05-10 13:49:26. Sprawdzic czy Programy=Poza domem wymusza Wentylacja=Stop, czy to lag z poprzednich testow MX2d/MX3 (Term=Urlop/Harm-Urlop).
+  [obs] T zadana=16.0 w Programy=Poza domem @ 2026-05-10 13:49:45 - zgodne z md MX4a: aktywny SP=T_poza (16.0). E4 f[14-15] powinno = E5 f[16-17] = 10:70.
+
+=== MX4d: Programy Poza domem -> Urlop @ 2026-05-10 13:50:26 ===
+  [FINDING uzup] W Programy=Poza/Urlop tylko BYPASS pozostaje aktywny w menu Nano. Term/Went/Wietrz zablokowane. Bypass byl AUTO przez caly czas MX4a/d. Sezon prawdopodobnie tez aktywny ale nie testowano.
+
+=== Programy Urlop -> Normal (odblokowanie menu, koniec MX4) @ 2026-05-10 13:51:10 ===
+
+=== MX5a: Bypass AUTO->ON (Sezon=Zima) @ 2026-05-10 13:51:57 ===
+
+=== MX5b: Sezon Zima->Chlodzenie (Bypass=ON) @ 2026-05-10 13:52:29 ===
+
+=== MX5c: Sezon Chlodzenie->Lato bez (Bypass=ON) @ 2026-05-10 13:53:24 ===
+
+=== MX6/4: Term=Harm, Sezon=Lato bez, Programy=Normal (aktualny stan po MX5c) @ 2026-05-10 13:53:50 ===
+
+=== MX6/5: Sezon Lato bez->Chlodz (Term=Harm, Programy=Normal) @ 2026-05-10 13:54:30 ===
+
+=== MX6/3: Sezon Chlodz->Zima (Term=Harm, Programy=Normal) @ 2026-05-10 13:55:11 ===
+
+=== MX6/1: Term Harm->Manual (Sezon=Zima, Programy=Normal) @ 2026-05-10 13:55:40 ===
+
+=== MX6/2: Sezon Zima->Chlodz (Term=Manual, Programy=Normal) @ 2026-05-10 13:56:16 ===
+
+=== MX6/6: Term Manual->Urlop (Sezon=Chlodz, Programy=Normal) @ 2026-05-10 13:56:52 ===
+
+=== POWROT DO BASELINE F0 (koniec testow Czesci II) @ 2026-05-10 13:58:25 ===
+Term Urlop->Harm, Sezon Chlodz->Zima, Bypass ON->AUTO. Programy=Normal, Wietrz=OFF, Went=B1.
+
+[NASTAWY % Naw/Wyw per bieg - dla referencji w analizie] - z E3(29) src=44 f[20-25]:
+  Bieg 1:    Naw=35%  Wyw=32%
+  Bieg 2:    Naw=37%  Wyw=35%
+  Bieg 3:    Naw=35%  Wyw=34%   <- B3 wyw < B2 wyw (NIETYPOWE - normalnie B3>B2>B1)
+  Wietrzenie: Naw=30%  Wyw=30%   <- nizsze niz B1 (NIETYPOWE - zwykle wietrzenie = max)
+
+Uzasadnienie wartosci: ustawione nielogicznie w stosunku do typowej krzywej (rosnacej z biegiem)
+ZEBY NIE HALASOWALY. B3 wyw mniejsze niz B2, Wietrz mniejsze niz B1 - kompromis komfort akustyczny.
+W analizie ramek: jesli E3 f[20-25] pokazuje te wartosci, to jest poprawny dump nastaw user'a.
+Wartosci powinny byc stale przez wszystkie cykle / testy (chyba ze user zmienil w menu serwisowym).

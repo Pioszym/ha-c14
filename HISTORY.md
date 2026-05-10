@@ -2,6 +2,54 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## Test Nano Master Mini — systematyczna weryfikacja protokołu (2026-05-10)
+
+**Cel:** systematyczne empiryczne mapowanie pól E4/E3/E5/AERO E4(63) wg planu w `TEST_NANO_MASTER_MINI.md`. Każdy test = 1 zmiana w menu Nano + marker + ≥3 cykle obserwacji. Łącznie ~50 testów (T1-T31 część liniowa + MX1-MX6 krzyżowe).
+
+**Setup:** ESP02 jako passive observer (Rola=OFF, Forward=ON), Nano Color CTP jako Master Mini, AERO 3B. Logi z `esphome logs` capture przez SSH do pliku, markery wstawiane przez `cat >> logfile`.
+
+**Plik raportu:** `FazaB_Analiza_2026-05-10.md` (pełen DIFF + lista propozycji P1-P13).
+
+### Główne odkrycia
+
+**Co potwierdzone (bez zmian PROTOCOL):**
+- Sezon enums w E4 f[27] / E3 f[27] sezon-bity / E5 f[27]
+- Wentylacja biegi B1/B2/B3/Stop w f[28] mastera
+- Bypass enum E5 f[25] (`0x60`/`0x61`/`0x62`) i reakcja AERO E4(63) f[28]
+- Wszystkie 5 setpointów temp (T16-T25) — encoding 100% zgodny
+- Setpoint cross-table (Term × Sezon × Programy) — generalnie spójna z §5.6
+- T15c Faza 4b: hipoteza "auto-bypass w Chłodzeniu = decyzja AERO" potwierdzona
+
+**Korekty / uzupełnienia PROTOCOL.md:**
+1. **§3.3 E3 f[27]** — przeformułowane: `(sezon_szyld) | (bypass_cmd 2-bit) | wietrz`. Wcześniejsze "bit 0 zawsze SET" obalone (T13 OFF → bit 0 CLEAR).
+2. **§3.3 E3 f[28]** — dodano overlay `+0x08` Chłodzenie (analogicznie do E4 f[28]) — wcześniej nie wymieniony.
+3. **§3.2 E4 f[24]** — dodana 3. wartość `0x00` (Sezon=Chłodz + brak stable). Korelacja: f[24]=`0x00` ⇔ Chłodz AND f[28] bit `0x40` CLEAR.
+4. **§3.2 E4 f[28] bit `0x40` (stable)** — uściślone warunki: Term=Manual + Wentylacja ∈ {Stop,B1-B3} (NIE Harm/Harm-Urlop) + korekta=0 + Sezon=Zima. **Bit "lepkie"** — raz utracony nie wraca samoczynnie (test power-cycle do zrobienia).
+5. **§3.4 AERO E4(63) f[27]** — dodano wartość `0x0A` = Wietrzenie aktywne (`0x08|0x02`).
+6. **§3.4 AERO f[20-27]** — w pełnym Stop zerowane (f[20] z `0x7E` na `0x00`).
+7. **§3.7 E5 f[28] kod UI** — tabela przepisana, wcześniejsze wartości (Manual+Zima=`0x19`, Urlop+Zima=`0x05`) były niezgodne z empirią (`0x15` i `0x0B`).
+8. **§3.2/§5.5 Programy=Urlop** — `f[28]=0x00` (NIE `0x40` jak wcześniej PROTOCOL twierdził). Test MX4d.
+9. **§5.6 Termostat=Urlop** — używa Eco wg sezonu (Zima→Eco_zima, Chłodz→Eco_chłodz), NIE Poza domem. Wcześniej PROTOCOL łączył to z Programy=Urlop.
+10. **§5.7 Auto-bypass logic** — nowa tabela: AUTO+Lato bez=otwarty, AUTO+Chłodz+cooling_demand=otwarty, AUTO+Zima=zamknięty.
+11. **§5.3 Wentylacja=Harm vs Harm-Urlop** — w E4/E3 f[28] **NIEROZRÓŻNIALNE** (oba bieg ze slotu, oba bez `0x40`). Różnica tylko w E5 f[28] (`0x05` vs `0x04`).
+
+### Fałszywe tropy
+
+- **Stable bit `0x40` = "Manual+korekta=0"** — częściowo prawda. Empirycznie wymaga DODATKOWO: Sezon=Zima + Wentylacja manualna (NIE Harm) + "świeży" cykl. Lepkość bita była przegapiona — F0 baseline miał stable=SET mimo Term=Harm (artefakt z poprzedniej sesji), co wprowadzało w błąd.
+- **Programy=Urlop f[28]=`0x40`** — błędna hipoteza w PROTOCOL od początku. Empirycznie `f[28]=0x00`.
+- **Termostat=Urlop+Zima→Poza domem setpoint** — błędne stwierdzenie w §5.6. Test T5: aktywny SP=Eco_zima.
+
+### Otwarte pytania po teście
+
+Patrz PROTOCOL §7 #16-21:
+- Lepkość stable bit (test power-cycle)
+- Slot Comfort harmonogramu — kiedy aktywny
+- Wietrzenie auto-exit timeout
+- AERO E4(63) f[27] bit `0x08` w innych stanach
+- MX1d AERO bypass utrzymany w Stop+Chłodz
+
+---
+
 ## E3(29)_44 f[27] hardcoded zamiast dynamicznego z g_season (2026-04-28)
 
 **Objaw:** po naprawie f[28] AERO odpowiada, ale **fizyczny Nano slave id=5 nie aktualizuje sezonu na wyświetlaczu** po zmianie z UI ESP master. Wczoraj działało (Sezon=Zima), dziś po zmianie na Lato bez slave ignoruje aktualizację.
