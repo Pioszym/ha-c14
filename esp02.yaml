@@ -134,18 +134,6 @@ globals:
   - id: g_vs_pending_id
     type: uint8_t
     initial_value: "0"       # id virtual slave ktory ma odpowiedziec (0 = brak)
-  - id: g_vs_cnt_2
-    type: uint16_t
-    initial_value: "0"       # liczba odpowiedzi VS id=2
-  - id: g_vs_cnt_3
-    type: uint16_t
-    initial_value: "0"
-  - id: g_vs_cnt_4
-    type: uint16_t
-    initial_value: "0"
-  - id: g_vs_cnt_5
-    type: uint16_t
-    initial_value: "0"
   - id: g_gear_cmd
     type: uint8_t
     restore_value: true
@@ -246,11 +234,11 @@ globals:
   - id: g_cycle_count
     type: uint32_t
     initial_value: "0"
+  - id: g_frame_no
+    type: uint8_t
+    initial_value: "0"   # numer ramki w cyklu master (1..27 w Master Full); reset na E4(29) src=21 f[3]=29
   - id: g_aero_resp_cycle
     type: uint16_t
-    initial_value: "0"
-  - id: g_aero_resp_total
-    type: uint32_t
     initial_value: "0"
   - id: g_cnt_nano
     type: uint32_t
@@ -283,15 +271,6 @@ globals:
   - id: g_cache_age_ms
     type: uint32_t
     initial_value: "0"
-  - id: g_log_nano
-    type: bool
-    initial_value: "false"
-  - id: g_log_aero
-    type: bool
-    initial_value: "false"
-  - id: g_log_esp
-    type: bool
-    initial_value: "false"
   # Setpointy % nawiew/wywiew per bieg (1/2/3/wietrzenie)
   # TODO: wstrzyknac do odpowiednich pol w E4(29)/E5(29) gdy zidentyfikujemy ktore
   # Fabryczne wartosci z E3(29)_44 obserwowane
@@ -341,7 +320,7 @@ script:
           id(g_last_tx_ms) = millis();
           id(g_last_tx_name) = name;
           id(uart_bus).write_array(bytes.data(), bytes.size());
-          if (id(g_log_esp)) {
+          {
             char h[120]; int p = 0;
             for (size_t i = 0; i < bytes.size() && p < 110; i++)
               p += snprintf(h+p, 120-p, "%s%02X", i?",":"", bytes[i]);
@@ -357,7 +336,6 @@ script:
     then:
       - lambda: |-
           id(g_aero_resp_cycle) = 0;
-          id(g_cycle_count)++;
 
       # 1. E4(29) — komenda biegu + sezon + wietrzenie (PIERWSZA jak u Nano)
       # LUB jednorazowo E4(29) src=0x2A config push gdy wykryto 80(2A) od slave (g_config_push_pending)
@@ -1040,16 +1018,11 @@ script:
           f[2] = (s + 0xA3) & 0xFF;
           // ESP TX na single-bus
           id(uart_bus).write_array(f.data(), f.size());
-          // Inkrementuj counter per id
-          if (vs_id == 2) id(g_vs_cnt_2)++;
-          else if (vs_id == 3) id(g_vs_cnt_3)++;
-          else if (vs_id == 4) id(g_vs_cnt_4)++;
-          else if (vs_id == 5) id(g_vs_cnt_5)++;
-          if (id(g_log_esp)) {
+          {
             char h[120]; int p = 0;
             for (size_t i = 0; i < f.size() && p < 110; i++)
               p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-            ESP_LOGW("c14m", ">>> VS_E4(%02X) id=%d %s", f[3], vs_id, h);
+            ESP_LOGW("c14m", ">>> SLAVE E4(%02X) id=%d [%s]", f[3], vs_id, h);
           }
 
   # Virtual slave 80 boot — wysyla jednorazowo po wlaczeniu switcha
@@ -1062,7 +1035,7 @@ script:
           if (vs_id < 2 || vs_id > 20) return;
           // Zabezpieczenie: 80 boot leci na bus tylko w Rola=Slave (zeby nie wprowadzac mastera w blad)
           if (!id(g_slave_on)) {
-            ESP_LOGW("c14m", "[VS] 80 boot id=%d POMINIETY (Rola != Slave)", vs_id);
+            ESP_LOGW("c14m", "[SLAVE] 80 boot id=%d skipped (Rola != Slave)", vs_id);
             return;
           }
           std::vector<uint8_t> f = {
@@ -1076,7 +1049,7 @@ script:
           char h[120]; int p = 0;
           for (size_t i = 0; i < f.size() && p < 110; i++)
             p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-          ESP_LOGW("c14m", ">>> VS_BOOT_80(%02X) id=%d [%s]", f[3], vs_id, h);
+          ESP_LOGW("c14m", ">>> SLAVE 80(%02X) id=%d [%s]", f[3], vs_id, h);
 
 interval:
   # Single-bus RX parser — czyta z uart_bus, dispatchuje per zrodlo ramki:
@@ -1132,22 +1105,35 @@ interval:
                 const char* nm[] = {"Stop","Bieg 1","Bieg 2","Bieg 3","Wietrzenie"};
                 if (bieg <= 4) id(ts_bieg).publish_state(nm[bieg]);
                 id(g_aero_resp_cycle)++;
-                id(g_aero_resp_total)++;
                 id(g_last_aero_rx_ms) = millis();  // dla dynamicznej flagi f[5]=AERO_OK w E4(29)
-                if (id(g_log_aero)) {
+                {
                   char h[120]; int p = 0;
                   for (int i = 0; i < 30 && p < 110; i++)
                     p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-                  ESP_LOGE("c14m", "<<< AERO E4(63) dt=%ums [%s] bieg=%d cz=%.1f nw=%.1f wt=%.1f wy=%.1f naw=%d%% wyw=%d%% bp=%d",
-                    dt, h, bieg, cz, nw, wt, wy, naw_pct, wyw_pct, bypass);
+                  ESP_LOGE("c14m", "<<< AERO  %02X(%02X) [%s]", f[0], f[3], h);
                 }
               } else {
-                if (id(g_log_nano)) {
+                // PROTOCOL §3.1: f[1] to marker typu, NIE adres zrodlowy.
+                // Zrodlo rozpoznaj po f[3]: 0x29 = master id=1; 0x2A..0x3C = slave (subtyp = 0x28+id)
+                bool from_slave = (f[3] >= 0x2A && f[3] <= 0x3C);
+                // Numer ramki TYLKO dla mastera (f[3]=0x29) - jak w PROTOCOL §2 Master Mini/Full.
+                // Reset na E4(29) src=21 f[3]=29 (start cyklu); slave i AERO bez numeru.
+                if (!from_slave) {
+                  if (f[0] == 0xE4 && f[1] == 0x21 && f[3] == 0x29) {
+                    id(g_frame_no) = 1;
+                  } else {
+                    if (id(g_frame_no) < 99) id(g_frame_no)++;
+                  }
+                }
+                {
                   char h[120]; int p = 0;
                   for (int i = 0; i < len && p < 110; i++)
                     p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-                  ESP_LOGI("c14m", "[NANO>] %02X(%02X) src=%02X [%s]",
-                    f[0], f[3], f[1], h);
+                  if (from_slave) {
+                    ESP_LOGI("c14m", "<<< SLAVE  %02X(%02X) [%s]", f[0], f[3], h);
+                  } else {
+                    ESP_LOGI("c14m", "#%02d MASTER %02X(%02X) [%s]", id(g_frame_no), f[0], f[3], h);
+                  }
                 }
                 // Virtual slaves: per-id wake-up detection (0xA8+id, 0x44, 0x29) - gate per switch g_vs_N
                 if (f[1] == 0x44 && f[3] == 0x29 && f[0] >= 0xAA && f[0] <= 0xAD) {
@@ -1157,13 +1143,14 @@ interval:
                                  (vs_id == 4 && id(g_vs_4)) ||
                                  (vs_id == 5 && id(g_vs_5));
                   if (enabled) {
-                    ESP_LOGW("c14m", "[VS] Wake-up %02X dla id=%d -> odpowiadam", f[0], vs_id);
                     id(g_vs_pending_id) = vs_id;
                     id(vs_respond).execute();
                   }
                 }
                 // Bus reader: E4(29) src=0x21 broadcast → publikuj do sensorów BUS (read-only, niezależnie od roli ESP)
                 if (f[0] == 0xE4 && f[1] == 0x21 && f[3] == 0x29) {
+                  // E4(29) src=0x21 to PIERWSZA ramka cyklu (master broadcast) - znacznik cykl start
+                  id(g_cycle_count)++;
                   // Cache surowych pol mastera dla VS slave echo (rotator daty, dow, zegar, setpoint, tryb, bieg)
                   id(g_m_dow)  = f[7];
                   id(g_m_hh)   = f[8];
@@ -1263,7 +1250,7 @@ interval:
           }
           // Timeout resync: fragment + 50ms cisza = stracilismy pozostale bajty, reset
           if (id(g_pos) > 0 && id(g_pos) < 30 && (millis() - id(g_last_byte_ms)) > 50) {
-            if (id(g_log_nano) || id(g_log_aero)) ESP_LOGW("c14m", "[BUS] timeout resync: pos=%u (50ms quiet), drop fragment", id(g_pos));
+            ESP_LOGW("c14m", "[BUS] timeout resync: pos=%u (50ms quiet), drop fragment", id(g_pos));
             id(g_pos) = 0;
           }
 
@@ -1328,51 +1315,6 @@ switch:
       - lambda: 'id(g_vs_5) = false; ESP_LOGW("c14m","=== VS id=5 OFF ===");'
 
   - platform: template
-    name: "Log NANO"
-    id: sw_log_nano
-    icon: mdi:console-line
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    turn_on_action:
-      - lambda: |-
-          id(g_log_nano) = true;
-          ESP_LOGW("c14m","=== LOG NANO ON ===");
-    turn_off_action:
-      - lambda: |-
-          id(g_log_nano) = false;
-          ESP_LOGW("c14m","=== LOG NANO OFF ===");
-
-  - platform: template
-    name: "Log AERO"
-    id: sw_log_aero
-    icon: mdi:console-line
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    turn_on_action:
-      - lambda: |-
-          id(g_log_aero) = true;
-          ESP_LOGW("c14m","=== LOG AERO ON ===");
-    turn_off_action:
-      - lambda: |-
-          id(g_log_aero) = false;
-          ESP_LOGW("c14m","=== LOG AERO OFF ===");
-
-  - platform: template
-    name: "Log ESP"
-    id: sw_log_esp
-    icon: mdi:console-network
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    turn_on_action:
-      - lambda: |-
-          id(g_log_esp) = true;
-          ESP_LOGW("c14m","=== LOG ESP ON ===");
-    turn_off_action:
-      - lambda: |-
-          id(g_log_esp) = false;
-          ESP_LOGW("c14m","=== LOG ESP OFF ===");
-
-  - platform: template
     name: "C14 Master Full"
     id: sw_master_full
     icon: mdi:format-list-numbered
@@ -1417,8 +1359,6 @@ select:
             id(g_master_on) = true;
             id(g_slave_on) = false;
             id(g_slave_ack) = false;  // reset ACK - bedzie ustawione po wykryciu slave reactive
-            id(g_cycle_count) = 0;
-            id(g_aero_resp_total) = 0;
             ESP_LOGW("c14m","=== ROLA: MASTER (VS niezalezne, mozna laczyc Master+VS dla testu lancucha) ===");
             id(master_cycle).execute();  // start petli (jesli juz leci, mode:queued zakolejkuje)
           } else if (x == "Slave") {
@@ -1756,37 +1696,6 @@ sensor:
     update_interval: 10s
     entity_category: diagnostic
     lambda: 'return id(g_cycle_count);'
-  - platform: template
-    name: "C14 AERO Responses"
-    accuracy_decimals: 0
-    update_interval: 10s
-    entity_category: diagnostic
-    lambda: 'return id(g_aero_resp_total);'
-  # Virtual slave counters - ile odpowiedzi E4(2X) wyslano
-  - platform: template
-    name: "VS2 odp"
-    accuracy_decimals: 0
-    update_interval: 5s
-    entity_category: diagnostic
-    lambda: 'return id(g_vs_cnt_2);'
-  - platform: template
-    name: "VS3 odp"
-    accuracy_decimals: 0
-    update_interval: 5s
-    entity_category: diagnostic
-    lambda: 'return id(g_vs_cnt_3);'
-  - platform: template
-    name: "VS4 odp"
-    accuracy_decimals: 0
-    update_interval: 5s
-    entity_category: diagnostic
-    lambda: 'return id(g_vs_cnt_4);'
-  - platform: template
-    name: "VS5 odp"
-    accuracy_decimals: 0
-    update_interval: 5s
-    entity_category: diagnostic
-    lambda: 'return id(g_vs_cnt_5);'
   # === Sensory BUS (read-only, aktualizowane z magistrali niezaleznie od roli ESP) ===
   - platform: template
     name: "Bus: T Comfort"
