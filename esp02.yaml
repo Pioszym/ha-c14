@@ -415,27 +415,37 @@ script:
             else if (id(g_season) == 2) v27 |= 0x10;
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
-            // f[28]: bieg + flagi:
-            //  Programy=Urlop → 0x40 (validity=0, sam stable bit)
-            //  inaczej: bieg z g_gear_cmd, +0x40 jesli Term=Manual AND nie Harm-Urlop, +0x08 jesli sezon=Chlodz (i nie Urlop)
+            // f[28]: bieg + flagi (PROTOCOL §3.2, korekta 2026-05-10):
+            //  Programy=Urlop → 0x00 (validity=0, bieg=0, BEZ stable)
+            //  inaczej: bieg z g_gear_cmd
+            //    +0x40 stable: Term=Manual AND Wentylacja ∈ {Stop,B1-B3} (NIE Harm/Harm-Urlop)
+            //                  AND Sezon=Zima AND korekta=0 (zakładamy 0)
+            //    +0x08 chłodz overlay: Sezon=Chłodzenie (NIE Urlop program)
             uint8_t v28;
             if (id(g_program) == 2 /* Urlop */) {
-              v28 = 0x40;
+              v28 = 0x00;
             } else {
               v28 = id(g_gear_cmd);
-              if (id(g_thermostat) == 2 /* Manual */ && !id(g_harm_urlop)) v28 |= 0x40;
+              if (id(g_thermostat) == 2 /* Manual */ && !id(g_harm_urlop)
+                  && id(g_season) == 0 /* Zima */) v28 |= 0x40;
               if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
             }
             f[28] = v28;
-            // f[24]: 0x64 jesli bit 0x40 SET w f[28] i normalne biegi, inaczej 0x32
-            f[24] = (id(g_thermostat) == 2 && !id(g_harm_urlop) && id(g_program) != 2) ? 0x64 : 0x32;
+            // f[24] sync flag: 0x64 gdy stable SET (Manual+Zima+manual_wentyl), 0x00 gdy Chłodz+brak stable, 0x32 inne
+            if ((v28 & 0x40) != 0) f[24] = 0x64;
+            else if (id(g_season) == 2) f[24] = 0x00;  // Chłodz + brak stable → 0x00 (PROTOCOL §3.2 korekta)
+            else f[24] = 0x32;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + 0xA3) & 0xFF;
             // Publikuj do sensorów BUS (gdy ESP=master, własne TX nie wraca przez RX, więc tu)
             { uint8_t bieg = f[28] & 0x07;
               const char* bnames[] = {"Stop","Stop","Stop","Bieg 1","Stop","Bieg 2","Stop","Bieg 3"};
-              if (f[28] == 0x40) id(ts_bieg).publish_state("Urlop");
+              // Programy=Urlop: f[28]==0x00 (validity=0, bieg=0, bez 0x40) AND g_program==2
+              // Programy=Poza domem: f[5] bit 0x04 SET
+              bool is_urlop = (id(g_program) == 2);
+              bool is_poza  = ((f[5] & 0x04) != 0);
+              if (is_urlop) id(ts_bieg).publish_state("Urlop");
               else if (bieg <= 7) id(ts_bieg).publish_state(bnames[bieg]);
               uint8_t tryb = f[27] & 0x03;
               const char* tnames[] = {"Harmonogram","Urlop","Manual","?"};
@@ -445,13 +455,13 @@ script:
               id(s_wietrzenie_bus).publish_state((f[27] & 0x20) != 0);
               float sp = ((f[14] * 128) + (f[15] % 128) - 2000) / 10.0f;
               if (sp > 5 && sp < 35) id(s_sp_active_bus).publish_state(sp);
-              // Programy: Urlop (f[28]==0x40, validity=0, sam stable bit) > Poza domem (f[5] bit 0x04) > Normal
-              const char* prog = (f[28] == 0x40) ? "Urlop" : ((f[5] & 0x04) ? "Poza domem" : "Normal");
+              // Programy: Urlop > Poza domem > Normal
+              const char* prog = is_urlop ? "Urlop" : (is_poza ? "Poza domem" : "Normal");
               id(s_program_bus).publish_state(prog);
               // Wentylacja (6 stanów): wnioskowane z f[27]+f[28]
               const char* wnames[] = {"Stop","Stop","Stop","B1","Stop","B2","Stop","B3"};
               const char* wentyl;
-              if (f[28] == 0x02) wentyl = "Urlop";
+              if (is_urlop) wentyl = "Urlop";
               else if (tryb == 0x02) wentyl = wnames[bieg];  // Manual termostat = ręczny bieg
               else wentyl = "Harm";  // Harm/Urlop termostat = master z harmonogramu
               id(s_wentylacja_bus).publish_state(wentyl);
@@ -508,10 +518,14 @@ script:
             // f[28] = bieg | 0x10 (znacznik E3) | 0x40 (stable config — wymagane przez AERO
             // zgodnie z minimalną ramką z PROTOCOL §2; bez 0x40 AERO milczy po długiej ciszy)
             f[28] = v28 | 0x10 | 0x40;
-            // f[27] = sezon (PROTOCOL §3.3): bit 0x01 zawsze SET, bity 3-4 sezon, bit 5 wietrzenie
-            uint8_t v27 = 0x01;
-            if (id(g_season) == 1) v27 |= 0x08;        // Lato bez ogrzewania
-            else if (id(g_season) == 2) v27 |= 0x10;   // Chłodzenie
+            // f[27] = sezon | bypass_cmd | wietrz (PROTOCOL §3.3, korekta 2026-05-10):
+            //   sezon szyld:  Zima=0x00, Lato bez=0x08, Chłodz=0x10
+            //   bypass cmd:   OFF=0x00, AUTO=0x01, ON=0x02 (z g_bypass_cmd 0x60/0x61/0x62)
+            //   wietrz overlay: +0x20 gdy ON
+            uint8_t v27 = 0x00;
+            if (id(g_season) == 1) v27 |= 0x08;
+            else if (id(g_season) == 2) v27 |= 0x10;
+            v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;   // 0x60→0, 0x61→1, 0x62→2
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
             uint16_t s = f[0] + f[1];
@@ -723,10 +737,11 @@ script:
                   if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
                   // f[28] = bieg | 0x10 (znacznik E3) | 0x40 (stable — wymagane przez AERO, patrz #2)
                   f[28] = v28 | 0x10 | 0x40;
-                  // f[27] = sezon (PROTOCOL §3.3) — patrz #2
-                  uint8_t v27 = 0x01;
+                  // f[27] = sezon | bypass_cmd | wietrz — patrz #2 (PROTOCOL §3.3, korekta 2026-05-10)
+                  uint8_t v27 = 0x00;
                   if (id(g_season) == 1) v27 |= 0x08;
                   else if (id(g_season) == 2) v27 |= 0x10;
+                  v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;
                   if (id(g_wietrz_on)) v27 |= 0x20;
                   f[27] = v27;
                   uint16_t s = f[0] + f[1];
@@ -1101,7 +1116,8 @@ interval:
                 id(s_naw_pct).publish_state(naw_pct);
                 id(s_wyw_pct).publish_state(wyw_pct);
                 id(ts_bypass).publish_state(bypass ? "Otwarty" : "Zamkniety");
-                id(bs_fan).publish_state(f[27] == 0x02);  // f[27] = flaga "AERO pracuje" (0x00=Stop, 0x02=B1/B2/B3)
+                // f[27] flaga "AERO pracuje" (PROTOCOL §3.4): 0x00=Stop, 0x02=B1/B2/B3, 0x0A=Wietrzenie aktywne (0x08|0x02)
+                id(bs_fan).publish_state((f[27] & 0x02) != 0);
                 const char* nm[] = {"Stop","Bieg 1","Bieg 2","Bieg 3","Wietrzenie"};
                 if (bieg <= 4) id(ts_bieg).publish_state(nm[bieg]);
                 id(g_aero_resp_cycle)++;
