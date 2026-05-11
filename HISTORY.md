@@ -2,6 +2,40 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## AERO TX off (service mode) — błędna wymuszone f[28] |= 0x40 zawsze (2026-05-11)
+
+**Objaw:** AERO przez >24h nie nadawał odpowiedzi E4(63) na E3(29)_44 trigger. **RX działał** (komendy biegu wykonywał fizycznie, zmieniał obroty wentylatorów), ale **TX zablokowany** — `<<< AERO E4(63)` nie pojawiało się w logu. Power-cycle AERO + zmiana parametrów + 24h ciągłej komunikacji ESP master nie pomagały. Nano w roli slave id=2 odpowiadał normalnie na AA wake-up — czyli bus elektrycznie działał. Tylko AERO milczał.
+
+**Diagnostyka:** Wstępna hipoteza pinningu po `f[3]` obalona (zmiana ID ESP 1→2 nie obudziła AERO). Hipoteza "kolizji" obalona (zero fragmentów RX = AERO nic nie nadawał, nie kwestia zniekształcenia). Hipoteza "service mode wymaga stable bit zawsze" (z HISTORY 2026-04-28) doprowadziła do **odwrotnego** błędu — wymuszania `f[28] |= 0x40` we wszystkich warunkach.
+
+**Root cause (znaleziony przez porównanie log Nano-master z poprzedniego dnia):**
+
+Z log_esp02_202605101228.log 12:28-12:36 (Nano-master z Manual+Lato bez+B2):
+```
+E4: ...,14,32,02,05,0A,05,23  ← f[24]=0x32, f[27]=0x0A, f[28]=0x05 (BEZ stable!)
+E3: ...,20,09,15,23           ← f[27]=0x09, f[28]=0x15 (BEZ stable!)
+```
+
+I AERO odpowiadał **non-stop** (każdy cykl). Czyli **stable bit `0x40` NIE jest "magic key" wymagany zawsze** — wręcz przeciwnie, jego wymuszanie w stanach gdzie Nano go nie wysyłał (Lato bez, Chłodz, Harm) prowadzi AERO do "service mode" gdzie blokuje TX.
+
+**Fix (commit `95b208e`):** stable bit `0x40` w E4 f[28] i E3 f[28] dodawany **TYLKO** gdy spełnione wszystkie:
+- Term=Manual
+- Sezon=Zima
+- Wentylacja ∈ {Stop, B1, B2, B3} (NIE Harm-Urlop)
+
+Inaczej: `f[28]` BEZ `0x40`, `f[24]=0x32` (unsynced). To replikuje dokładnie zachowanie Nano-master z empirii.
+
+**Weryfikacja:** Po flashu + ustawienie ESP w Sezon=Lato bez+Term=Manual+Went=B2+Bypass=AUTO (identyczny stan jak Nano 12:28 wczoraj) — AERO **natychmiast** zaczął odpowiadać na E3 trigger.
+
+**Lekcje:**
+1. **HISTORY 2026-04-28** stwierdzała "Bit 0x40 WYMAGANY do resync AERO ... Master powinien zawsze wysyłać f[28] |= 0x40". To było **uproszczeniem** w stanie pomyłki — w faktycznie AERO toleruje brak `0x40` w trybach gdzie Nano go nie wysyła. PROTOCOL.md §3.3 wymaga korekty.
+2. **Wczorajszy fix #3** (Manual+Zima only, z Faza B testu Master Mini) okazał się **poprawny** — moje cofnięcie dziś rano było pomyłką. Empiria > intuicja.
+3. **AERO "service mode"** — gdy master przez dłuższy czas wysyła stable bit niezgodnie z konwencją Nano (zawsze SET, nie zależny od trybu), AERO blokuje TX. Stan persistent przez power-cycle. Wybudzanie: master musi wysyłać dokładnie jak Nano (warunkowy stable).
+
+**Status PROTOCOL.md:** §3.3 wymaga korekty uwagi o `0x40 zawsze SET` — fałszywa. Patrz commit obok.
+
+---
+
 ## Test Nano Master Mini — systematyczna weryfikacja protokołu (2026-05-10)
 
 **Cel:** systematyczne empiryczne mapowanie pól E4/E3/E5/AERO E4(63) wg planu w `TEST_NANO_MASTER_MINI.md`. Każdy test = 1 zmiana w menu Nano + marker + ≥3 cykle obserwacji. Łącznie ~50 testów (T1-T31 część liniowa + MX1-MX6 krzyżowe).

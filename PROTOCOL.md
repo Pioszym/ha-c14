@@ -338,7 +338,25 @@ Tryb termostatu **nie** wpływa na E3 f[27].
 
 > **2026-05-10:** uzupełniono overlay `+0x08` Chłodzenie (analogicznie do E4 f[28]) — wcześniej PROTOCOL nie wymieniał, T2/MX1a/MX1c/MX1d potwierdziły.
 
-⚠️ **Bit `0x40` jest WYMAGANY do resync AERO** niezależnie od trybu termostatu. AERO toleruje `0x13` (bez `0x40`) tylko dopóki trzyma świeży sync od mastera. Po dłuższej ciszy lub utracie heartbeat-u AERO przechodzi w stan oczekujący ramkę z bitem `0x40` (deterministyczna konfiguracja); bez tego bitu pozostaje cichy mimo że master cyklicznie nadaje E4(29) i E3(29)_44. **Master powinien zawsze wysyłać `f[28] |= 0x40`**, niezależnie od stanu termostatu — patrz HISTORY 2026-04-28. Nano master tak właśnie robi (zawsze SET), my w ESP poprawiliśmy logikę tego dnia.
+⚠️ **Bit `0x40` w E3 f[28] — warunkowy, NIE zawsze SET** (korekta 2026-05-11):
+
+Wcześniejsza wersja PROTOCOL stwierdzała "0x40 wymagany zawsze, master powinien wysyłać niezależnie od trybu termostatu" — to było **błędne uproszczenie** (HISTORY 2026-04-28 hipoteza obalona). Empiria z `log_esp02_202605101228.log` 12:28-12:36:
+
+Nano-master w Manual+Lato bez+B2 wysyłał `E3 f[28]=0x15` (`0x05` | `0x10`, **BEZ** `0x40`) i AERO odpowiadał non-stop. Z testu Master Mini wczoraj (T1+, baseline po sezon Zima→Lato bez): Nano przeszedł z `0x53` na `0x13` (utrata stable) i AERO dalej odpowiadał.
+
+**Faktyczna reguła Nano-master (zweryfikowana empirycznie):**
+
+Stable bit `0x40` w E3 f[28] (i analogicznie w E4 f[28]) SET wyłącznie gdy:
+- Termostat=**Manual** ORAZ
+- Sezon=**Zima** ORAZ
+- Wentylacja ∈ {Stop, B1, B2, B3} (NIE Harm-Urlop) ORAZ
+- korekta termostatu = 0
+
+Inaczej `f[28]` BEZ `0x40` + `f[24]=0x32` (unsynced).
+
+**KRYTYCZNE:** Master implementacja MUSI naśladować tę warunkowość. Wymuszanie `f[28] |= 0x40` zawsze (jak robił ESP master od 2026-04-28 do 2026-05-11) prowadzi po dłuższym czasie do **AERO "service mode"** — AERO blokuje TX odpowiedzi E4(63) mimo poprawnego RX. Stan persistent przez power-cycle. Wybudzenie: zaprzestać wymuszania stable bit + ustawić tryb gdzie Nano-master też nie wysyła `0x40` (np. Manual+Lato bez+B2).
+
+Patrz HISTORY 2026-05-11 "AERO TX off (service mode) — błędna wymuszone f[28] |= 0x40 zawsze".
 
 ### 3.4 E4(63) src=0x21 — ODPOWIEDŹ AERO
 
