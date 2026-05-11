@@ -134,6 +134,10 @@ globals:
   - id: g_vs_pending_id
     type: uint8_t
     initial_value: "0"       # id virtual slave ktory ma odpowiedziec (0 = brak)
+  - id: g_gear_poza
+    type: uint8_t
+    restore_value: true
+    initial_value: "0x01"   # Stop (analogicznie do nastawy strefy Poza w Nano EEPROM)
   - id: g_gear_cmd
     type: uint8_t
     restore_value: true
@@ -336,6 +340,10 @@ script:
     then:
       - lambda: |-
           id(g_aero_resp_cycle) = 0;
+          // 2026-05-11: g_cycle_count inkrement gdy ESP jest masterem (TX cyklu).
+          // Bus reader RX inkrementuje tylko gdy widzi obcego mastera (np. Nano-master);
+          // wlasne TX nie wraca przez RS-485, wiec bez tego sensor c14_cycles=0 w trybie Master.
+          id(g_cycle_count)++;
 
       # 1. E4(29) — komenda biegu + sezon + wietrzenie (PIERWSZA jak u Nano)
       # LUB jednorazowo E4(29) src=0x2A config push gdy wykryto 80(2A) od slave (g_config_push_pending)
@@ -408,7 +416,6 @@ script:
               f[idx] = (v / 128) & 0xFF;
               f[idx+1] = (v % 128) & 0xFF;
             };
-            // f[12-13] T_pok — ESP nie ma sensora, placeholder z aktywnym SP (Nano sensor uzywa wlasnej wartosci)
             // f[14-15] aktywny setpoint wg cross-table (PROTOCOL §5.6, fix 2026-05-10):
             //   Programy=Poza/Urlop -> g_sp_poza
             //   Term=Manual         -> g_sp_reczna
@@ -424,44 +431,55 @@ script:
             } else {
               active_sp = id(g_sp_chlodz);
             }
-            enc(12, active_sp);   // T_pok placeholder = active SP (spojnosc z f[14-15])
             enc(14, active_sp);
+            // f[12-13] T_pok — realny pomiar z HA sensora (Aqara Zigbee, sensor.0x00158d0007ef8421_temperature)
+            // 2026-05-11: bralismy active_sp ale to mylilo AERO (pokoj == SP => brak cooling demand).
+            // Fallback 22.0°C gdy HA sensor niedostepny (boot, WiFi down).
+            float t_pok = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+            // Sanity: ograniczyc do 5-35°C (zakres realnej pokojowej, zabezpieczenie przed kosmos w razie awarii)
+            if (t_pok < 5.0f) t_pok = 5.0f;
+            if (t_pok > 35.0f) t_pok = 35.0f;
+            enc(12, t_pok);
             uint8_t v27 = id(g_thermostat) & 0x07;  // 0=Harmonogram, 1=Urlop, 2=Manual
             if (id(g_season) == 1) v27 |= 0x08;
             else if (id(g_season) == 2) v27 |= 0x10;
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
-            // f[28]: bieg + flagi (PROTOCOL §3.2, fix #3 z 2026-05-10 PRZYWRÓCONY 2026-05-11):
-            //  Programy=Urlop → 0x00 (validity=0, bieg=0, BEZ stable)
-            //  inaczej: bieg z g_gear_cmd
-            //    +0x40 stable: TYLKO Term=Manual AND Sezon=Zima AND nie Harm-Urlop
-            //    +0x08 chłodz overlay: Sezon=Chłodzenie AND nie Harm-Urlop
-            // EMPIRIA: Nano-master w Manual+Lato bez+B2 wysyłał f[28]=0x05 (BEZ stable) i AERO odpowiadał
-            // (log_esp02_202605101228.log 12:28-12:36). Stable bit "zawsze SET" psuł AERO.
+            // f[28]: bieg + flagi (PROTOCOL §3.2, korekta krytyczna 2026-05-11):
+            //  Programy=Urlop      → 0x00 (validity=0)
+            //  Programy=Poza domem → g_gear_poza + chlodz overlay
+            //  Programy=Normal     → bieg z g_gear_cmd + chlodz overlay
+            //
+            // STABLE BIT 0x40 NIGDY NIE WYSYLANE od ESP-master.
+            // Empiria 2026-05-11: AERO milczy gdy ESP wysyla stable+sync w Manual+Zima.
+            // Hipoteza: stable bit + f[24]=0x64 wymagaja handshake/sparing fabrycznego
+            // (jak Nano-master). ESP-master bez tego sparingu nie ma "uprawnien" do nadawania
+            // synced state - AERO go odrzuca. Empirycznie Nano w 12:28-12:36 (Manual+Lato bez)
+            // nadawal bez stable+sync i AERO odpowiadal -> ten tryb jest bezpieczny dla ESP.
             uint8_t v28;
             if (id(g_program) == 2 /* Urlop */) {
               v28 = 0x00;
+            } else if (id(g_program) == 1 /* Poza domem */) {
+              v28 = id(g_gear_poza);
+              if (id(g_season) == 2) v28 |= 0x08;
             } else {
               v28 = id(g_gear_cmd);
-              if (id(g_thermostat) == 2 /* Manual */ && !id(g_harm_urlop)
-                  && id(g_season) == 0 /* Zima */) v28 |= 0x40;
               if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
             }
             f[28] = v28;
-            // f[24] sync flag: 0x64 gdy stable SET, 0x32 inne (0x00 dla Chłodz+Harm zaobserwowane wczoraj T2, ale w produkcji 0x32 wystarczy)
-            f[24] = ((v28 & 0x40) != 0) ? 0x64 : 0x32;
+            // f[24] = 0x32 ZAWSZE (unsynced). 0x64 wymaga handshake AERO ktorego ESP nie ma.
+            f[24] = 0x32;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + 0xA3) & 0xFF;
             // Publikuj do sensorów BUS (gdy ESP=master, własne TX nie wraca przez RX, więc tu)
             { uint8_t bieg = f[28] & 0x07;
+              // f[28] dolne 3 bity: 0x01=Stop, 0x03=B1, 0x05=B2, 0x07=B3; bit 0=validity
+              // Programy=Urlop: f[28]==0x00 (validity=0) → bieg=0 → "Stop"
               const char* bnames[] = {"Stop","Stop","Stop","Bieg 1","Stop","Bieg 2","Stop","Bieg 3"};
-              // Programy=Urlop: f[28]==0x00 (validity=0, bieg=0, bez 0x40) AND g_program==2
-              // Programy=Poza domem: f[5] bit 0x04 SET
               bool is_urlop = (id(g_program) == 2);
               bool is_poza  = ((f[5] & 0x04) != 0);
-              if (is_urlop) id(ts_bieg).publish_state("Urlop");
-              else if (bieg <= 7) id(ts_bieg).publish_state(bnames[bieg]);
+              if (bieg <= 7) id(ts_bieg).publish_state(bnames[bieg]);
               uint8_t tryb = f[27] & 0x03;
               const char* tnames[] = {"Harmonogram","Urlop","Manual","?"};
               id(s_termostat_bus).publish_state(tnames[tryb]);
@@ -470,16 +488,13 @@ script:
               id(s_wietrzenie_bus).publish_state((f[27] & 0x20) != 0);
               float sp = ((f[14] * 128) + (f[15] % 128) - 2000) / 10.0f;
               if (sp > 5 && sp < 35) id(s_sp_active_bus).publish_state(sp);
+              // T pokojowa wysylana w f[12-13] (z HA Aqara sensora przez id(ha_t_pok))
+              float tpok = ((f[12] * 128) + (f[13] % 128) - 2000) / 10.0f;
+              if (tpok > 5 && tpok < 35) id(s_t_pok_bus).publish_state(tpok);
               // Programy: Urlop > Poza domem > Normal
               const char* prog = is_urlop ? "Urlop" : (is_poza ? "Poza domem" : "Normal");
               id(s_program_bus).publish_state(prog);
-              // Wentylacja (6 stanów): wnioskowane z f[27]+f[28]
-              const char* wnames[] = {"Stop","Stop","Stop","B1","Stop","B2","Stop","B3"};
-              const char* wentyl;
-              if (is_urlop) wentyl = "Urlop";
-              else if (tryb == 0x02) wentyl = wnames[bieg];  // Manual termostat = ręczny bieg
-              else wentyl = "Harm";  // Harm/Urlop termostat = master z harmonogramu
-              id(s_wentylacja_bus).publish_state(wentyl);
+              // s_wentylacja_bus przeniesione do lambda RX AERO E4(63) f[26] - faktyczny bieg z AERO
               // Zegar + dow z f[7-9]
               char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", f[8], f[9]);
               id(s_zegar_bus).publish_state(clk);
@@ -528,15 +543,17 @@ script:
             f[23] = id(g_naw_b1);
             f[24] = id(g_naw_b2);
             f[25] = id(g_naw_b3);
-            uint8_t v28 = id(g_gear_cmd);
-            if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
-            // f[28] = bieg | 0x10 marker | stable (warunkowo — jak Nano-master)
-            // 2026-05-11: stable bit synchronizowany z E4 f[28] (Term=Manual+Zima+nie Harm-Urlop)
-            // EMPIRIA: Nano w Manual+Lato bez wysyłał E3 f[28]=0x15 (BEZ 0x40) i AERO odpowiadał
-            uint8_t v28_stable = 0;
-            if (id(g_thermostat) == 2 /* Manual */ && !id(g_harm_urlop)
-                && id(g_season) == 0 /* Zima */) v28_stable = 0x40;
-            f[28] = v28 | 0x10 | v28_stable;
+            // bieg per Programy + chlodz overlay (synchronizacja z E4):
+            //   Urlop      → 0 (validity=0)
+            //   Poza domem → g_gear_poza
+            //   Normal     → g_gear_cmd
+            // f[28] = bieg | 0x10 marker (BEZ stable bit 0x40 - patrz E4 lambda komentarz)
+            uint8_t v28;
+            if (id(g_program) == 2) v28 = 0x00;
+            else if (id(g_program) == 1) v28 = id(g_gear_poza);
+            else v28 = id(g_gear_cmd);
+            if (id(g_season) == 2 && !id(g_harm_urlop) && id(g_program) != 2) v28 |= 0x08;
+            f[28] = v28 | 0x10;
             // f[27] = sezon | bypass_cmd | wietrz (PROTOCOL §3.3, korekta 2026-05-10):
             //   sezon szyld:  Zima=0x00, Lato bez=0x08, Chłodz=0x10
             //   bypass cmd:   OFF=0x00, AUTO=0x01, ON=0x02 (z g_bypass_cmd 0x60/0x61/0x62)
@@ -1140,8 +1157,9 @@ interval:
                 id(ts_bypass).publish_state(bypass ? "Otwarty" : "Zamkniety");
                 // f[27] flaga "AERO pracuje" (PROTOCOL §3.4): 0x00=Stop, 0x02=B1/B2/B3, 0x0A=Wietrzenie aktywne (0x08|0x02)
                 id(bs_fan).publish_state((f[27] & 0x02) != 0);
-                const char* nm[] = {"Stop","Bieg 1","Bieg 2","Bieg 3","Wietrzenie"};
-                if (bieg <= 4) id(ts_bieg).publish_state(nm[bieg]);
+                // Aero: Bieg (s_wentylacja_bus) - faktyczny stan AERO z f[26]
+                const char* wn[] = {"Stop","Bieg 1","Bieg 2","Bieg 3","Wietrzenie"};
+                if (bieg <= 4) id(s_wentylacja_bus).publish_state(wn[bieg]);
                 id(g_aero_resp_cycle)++;
                 id(g_last_aero_rx_ms) = millis();  // dla dynamicznej flagi f[5]=AERO_OK w E4(29)
                 {
@@ -1218,13 +1236,7 @@ interval:
                   // Programy: Urlop > Poza domem > Normal
                   const char* prog = (f[28] == 0x40) ? "Urlop" : (harm_active ? "Poza domem" : "Normal");
                   id(s_program_bus).publish_state(prog);
-                  // Wentylacja (6 stanów)
-                  const char* wnames[] = {"Stop","Stop","Stop","B1","Stop","B2","Stop","B3"};
-                  const char* wentyl;
-                  if (f[28] == 0x02) wentyl = "Urlop";
-                  else if (tryb == 0x02) wentyl = wnames[bieg];
-                  else wentyl = "Harm";
-                  id(s_wentylacja_bus).publish_state(wentyl);
+                  // s_wentylacja_bus przeniesione do lambda RX AERO E4(63) - faktyczny bieg z AERO
                   // Zegar + dow z f[7-9]
                   char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", f[8], f[9]);
                   id(s_zegar_bus).publish_state(clk);
@@ -1435,6 +1447,22 @@ select:
           else if (x == "Harm-Urlop")  { id(g_harm_urlop) = true;  }  // bieg z g_gear_cmd, ale bez bitu 0x40 + f[24]=0x32
 
   - platform: template
+    name: "Wentylacja Poza domem / Urlop"
+    id: sel_gear_poza
+    icon: mdi:home-export-outline
+    options: ["Bieg 3", "Bieg 2", "Bieg 1", "Stop"]
+    initial_option: "Stop"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Stop")   id(g_gear_poza) = 0x01;
+          else if (x == "Bieg 1") id(g_gear_poza) = 0x03;
+          else if (x == "Bieg 2") id(g_gear_poza) = 0x05;
+          else if (x == "Bieg 3") id(g_gear_poza) = 0x07;
+          ESP_LOGW("c14m","Wentylacja Poza/Urlop: %s (0x%02X)", x.c_str(), id(g_gear_poza));
+
+  - platform: template
     name: "Termostat"
     id: sel_termostat
     icon: mdi:thermostat
@@ -1620,7 +1648,7 @@ number:
     icon: mdi:thermometer-high
     min_value: 10
     max_value: 30
-    step: 0.1
+    step: 0.5
     initial_value: 23.0
     restore_value: true
     optimistic: true
@@ -1634,7 +1662,7 @@ number:
     icon: mdi:thermometer-low
     min_value: 10
     max_value: 30
-    step: 0.1
+    step: 0.5
     initial_value: 21.0
     restore_value: true
     optimistic: true
@@ -1648,7 +1676,7 @@ number:
     icon: mdi:snowflake-thermometer
     min_value: 10
     max_value: 30
-    step: 0.1
+    step: 0.5
     initial_value: 23.0
     restore_value: true
     optimistic: true
@@ -1662,7 +1690,7 @@ number:
     icon: mdi:thermometer-auto
     min_value: 10
     max_value: 30
-    step: 0.1
+    step: 0.5
     initial_value: 22.0
     restore_value: true
     optimistic: true
@@ -1676,7 +1704,7 @@ number:
     icon: mdi:home-export-outline
     min_value: 10
     max_value: 30
-    step: 0.1
+    step: 0.5
     initial_value: 20.0
     restore_value: true
     optimistic: true
@@ -1687,6 +1715,15 @@ number:
   # Slave ID usuniete 2026-04-24 - zastapione switchami VS id=2..5
 
 sensor:
+  # T pokojowa z HA (Aqara/Zigbee) — uzywana w E4(29) f[12-13] zeby AERO mogl ocenic
+  # cooling demand (T_pok > active SP). ESP nie ma wlasnego sensora. 2026-05-11.
+  # Platform homeassistant tylko pull-uje do ESP (nie tworzy entity w HA).
+  - platform: homeassistant
+    id: ha_t_pok
+    entity_id: sensor.0x00158d0007ef8421_temperature
+    filters:
+      - filter_out: nan
+
   - platform: template
     name: "Aero: T.Czerpnia"
     id: s_czerp
@@ -1778,6 +1815,14 @@ sensor:
     device_class: temperature
     accuracy_decimals: 1
   - platform: template
+    name: "Bus: T pokojowa"
+    id: s_t_pok_bus
+    icon: mdi:home-thermometer
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+    # publishowane w lambda E4(29) src=21 po skomponowaniu f[12-13]
+  - platform: template
     name: "Bus: % Naw B1"
     id: s_naw_b1_bus
     unit_of_measurement: "%"
@@ -1820,7 +1865,7 @@ sensor:
 
 text_sensor:
   - platform: template
-    name: "Bus: Bieg aktualny"
+    name: "Bus: Bieg"
     id: ts_bieg
     icon: mdi:fan
   - platform: template
@@ -1841,9 +1886,10 @@ text_sensor:
     id: s_program_bus
     icon: mdi:home
   - platform: template
-    name: "Bus: Wentylacja"
+    name: "Aero: Bieg"
     id: s_wentylacja_bus
     icon: mdi:fan-auto
+    # publishowany z lambda RX AERO E4(63) f[26] (faktyczny bieg AERO): 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrzenie
   - platform: template
     name: "Bus: Bypass tryb"
     id: s_bypass_cmd_bus
@@ -1863,7 +1909,7 @@ text_sensor:
 
 binary_sensor:
   - platform: template
-    name: "Wentylator"
+    name: "Aero: Wentylator"
     id: bs_fan
     device_class: running
   - platform: template

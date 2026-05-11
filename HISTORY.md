@@ -2,6 +2,48 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## Bit 0x40 to "trusted master" assertion, NIE "stable config" (2026-05-11 wieczór)
+
+**Drugie odkrycie krytyczne tego dnia** — kontynuacja "AERO TX off" debugowania.
+
+**Objaw:** Po rannym fixie (stable bit warunkowo: Manual+Zima only) AERO odpowiadał w Lato bez i Chłodzeniu. ALE po zmianie Sezon na Zima (gdy ESP zaczynał wysyłać `f[28]=0x43/0x45` stable+B1/B2, plus `f[24]=0x64` SYNCED) — AERO natychmiast milkł. Testowane B1, B2 — oba milkły.
+
+**Diagnostyka:** Sprawdzenie wczorajszego logu `log_esp02_202605101228.log` ujawniło że Nano w 12:45:46-55 wysyłał **dokładnie te same ramki** (Manual+Zima+B2+stable, `f[28]=0x45`, `f[24]=0x64`) — i AERO **odpowiadał** non-stop. Identyczne bajty f[3]/f[5]/f[24]/f[27]/f[28] — ale Nano dostaje odpowiedź, ESP nie.
+
+**Wniosek:** Bit `0x40` w f[28] + `f[24]=0x64` (synced flag) wymagają **fabrycznego pairingu/handshake** z AERO który Nano-master ma a ESP-master nie. To NIE "stable config" jak myśleliśmy (PROTOCOL §3.2 i §3.3) — to **"Trusted Master" assertion**:
+- Nano: zainstalowany razem z AERO, ma sparowanie → AERO ufa bit 0x40 → odpowiada
+- ESP: dodany "po fakcie", brak sparowania → AERO traktuje bit 0x40 jako naruszenie autorytetu → service mode TX off
+
+**Fix (commit po sesji):** ESP-master NIGDY nie wysyła:
+- bit `f[28] 0x40` (E4 i E3 — usunięte warunkowe ustawianie)
+- `f[24]=0x64` (zawsze `0x32` — unsynced)
+
+ESP nadaje minimum potrzebne do działania (bieg + sezon + setpointy + bypass cmd). AERO toleruje "unsynced master" stan na wszystkich sezonach.
+
+**Empirycznie potwierdzone (2026-05-11 23:37):** ESP w Manual+Zima+B1 wysyła `f[28]=0x03`, `f[24]=0x32` — AERO odpowiada non-stop. Sezon Lato bez/Chłodz/Zima — wszystkie działają.
+
+**Hipotezy dlaczego AERO różnicuje Nano vs ESP** (do późniejszej inwestygacji):
+1. Timing/jitter ESP32 vs Nano kwarc
+2. Brak sekwencji boot handshake (AERO sparowany z Nano przy instalacji)
+3. Rotator daty ESP zaczyna od `f[25]=0x00` po reboot — Nano nigdy nie reboot'uje
+4. Inny bajt którego nie zauważyliśmy (D0-D5, E2, heartbeats)
+
+**Konsekwencje PROTOCOL.md §3.2 / §3.3:**
+- Bit `0x40` należy reinterpretować — to NIE "stable config" lecz **"Trusted Master flag"**
+- `f[24]=0x64` to NIE "synced state" lecz **"fresh AERO heartbeat / trusted master mode"**
+- ESP-master implementacja MUSI używać tylko `f[24]=0x32` i `f[28]` bez `0x40`
+- Nano-master jako "fabrycznie sparowany" ma right do tych flag — opis pozostaje OK dla Nano
+
+**Funkcjonalność po fixie:**
+- ✅ Komendy biegu — działają
+- ✅ Bypass (OFF/AUTO/ON) — działają
+- ✅ Programy (Normal/Poza domem/Urlop) — działają
+- ✅ Cross-table active SP (Term × Sezon × Programy) — działa
+- ✅ Telemetria AERO (T.Czerpnia, T.Nawiew, T.Wyrzut, T.Wywiew, %, bypass status) — działa
+- ⚠ ESP-master działa w trybie "untrusted master" — wszystkie funkcje OK, brak `synced` state w protokole (nie wpływa na działanie)
+
+---
+
 ## AERO TX off (service mode) — błędna wymuszone f[28] |= 0x40 zawsze (2026-05-11)
 
 **Objaw:** AERO przez >24h nie nadawał odpowiedzi E4(63) na E3(29)_44 trigger. **RX działał** (komendy biegu wykonywał fizycznie, zmieniał obroty wentylatorów), ale **TX zablokowany** — `<<< AERO E4(63)` nie pojawiało się w logu. Power-cycle AERO + zmiana parametrów + 24h ciągłej komunikacji ESP master nie pomagały. Nano w roli slave id=2 odpowiadał normalnie na AA wake-up — czyli bus elektrycznie działał. Tylko AERO milczał.

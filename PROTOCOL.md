@@ -208,7 +208,7 @@ E4,21,[cks],29,[F4],[F5],00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],
 | f[14-15] | HH,LL | **Aktywny setpoint** (śledzi tryb: Comfort/Eco/Manual/Poza domem) | KNOWN |
 | f[16-22] | `0x7E` ×7 | filler | UNKNOWN |
 | f[23] | `0x14` | stałe | UNKNOWN |
-| f[24] | `0x00/0x32/0x64` | Tryb mocy: `0x64` = synced (Manual+Zima+B1-B3), `0x32` = unsynced (Term=Harm/Urlop, Wentylacja=Harm-Urlop, Lato bez), `0x00` = Sezon=Chłodzenie + brak bitu `0x40` w f[28]. Paruje z f[28] bit 0x40. | KNOWN |
+| f[24] | `0x00/0x32/0x64` | **"Trusted Master / fresh AERO sync" flag** (korekta 2026-05-11 wieczór). `0x64` = trusted master z fabrycznym sparingiem + fresh AERO heartbeat (Nano tylko). `0x32` = "untrusted/unsynced master" — bezpieczna wartość, ESP-master ZAWSZE używa. `0x00` = obserwowane w Chłodz+Harm (Nano-specific). **ESP-master z fix 2026-05-11 wieczór: zawsze `0x32`** | KNOWN |
 | f[25] | `0x00/0x01/0x02/0x03` | **Faza transmisji daty** (rotuje co cykl Master Full) | KNOWN |
 | f[26] | wartość daty | zależnie od f[25]: 0x00 init, rok mod 100, miesiąc 1-12, dzień 1-31 | KNOWN |
 | f[27] | bitfield | **tryb temp + sezon + wietrzenie** (patrz niżej) | KNOWN |
@@ -249,13 +249,17 @@ Bit 0 = validity, bity 1-2 = value biegu:
 
 Overlays / specjalne wartości:
 - `+0x08` (bit 3) = chłodzenie aktywne (B1+cool = `0x0B`)
-- `+0x40` (bit 6) = flaga **"konfiguracja deterministyczna"**. Warunki SET (wszystkie wymagane):
+- `+0x40` (bit 6) = **"Trusted Master assertion"** (korekta interpretacji 2026-05-11 wieczór, wcześniej błędnie "stable config"). To **flaga którą Nano-master ma right wysyłać** w wyniku fabrycznego sparingu z AERO (przy instalacji). AERO sprawdza ten bit + `f[24]=0x64` jako kombinację "fresh AERO sync trusted master".
+
+  **Empiria Nano (gdy wysyła bit `0x40`):**
   - Termostat=Manual ORAZ
   - Wentylacja ∈ {Stop, B1, B2, B3} (NIE Harm/Harm-Urlop) ORAZ
   - korekta termostatu = 0 ORAZ
   - Sezon=Zima (Sezon=Chłodzenie/Lato bez → CLEAR)
-  - **Bit "lepkie"**: raz utracony (po naruszeniu warunków) NIE wraca samoczynnie po przywróceniu warunków — wymaga power-cycle Nano lub świeżego wejścia w Manual po dłuższej przerwie. Empirycznie 2026-05-10: T4 (Manual+Zima+B1) SET; po sezon→chłodz+powrót zima nie wrócił; po MX6/1 (Manual+Zima ponownie po wielu zmianach) też nie wrócił.
-  - Paruje z `f[24]=0x64`. Każde naruszenie warunku → bit CLEAR + `f[24]=0x32` (lub `0x00` w Chłodz)
+  - **Bit "lepkie"**: raz utracony (po naruszeniu warunków) NIE wraca samoczynnie po przywróceniu warunków — wymaga power-cycle Nano lub świeżego wejścia w Manual po dłuższej przerwie.
+  - Paruje z `f[24]=0x64`.
+
+  ⚠️ **KRYTYCZNE dla ESP-master implementacji** (HISTORY 2026-05-11 wieczór): ESP nie ma fabrycznego sparingu z AERO. Wysyłanie bit `0x40` przez ESP wprowadza AERO w **"service mode TX off"** — AERO ignoruje master, nie nadaje E4(63). **ESP-master MUSI ZAWSZE wysyłać `f[28]` BEZ bitu `0x40`** (i `f[24]=0x32` zawsze).
 
 AERO reaguje mechanicznie tylko na bity 1-2. Bity `0x40` i `0x08` ignoruje — to flagi dla slaves.
 
