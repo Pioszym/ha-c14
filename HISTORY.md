@@ -2,6 +2,106 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## Sesja Nano Master Mini — empiria 2026-05-16
+
+**Setup:** Nano w trybie Master Mini (id=1), ESP=OFF observer. Capture przez `esphome logs` do pliku `tests/2026-05-16_wietrzenie_sezony/log_esp02_20260516_2141.log` (14782 linii, 308 ramek Nano E4(29) master).
+
+**Cel pierwotny:** weryfikacja Wietrzenia w Sezonach Lato bez i Chłodzenie (historyczna hipoteza: "Wietrz w sezonach niezimowych nie działa").
+
+**Cel rozszerzony:** weryfikacja interpretacji bitów f[24]/f[28] master (poprzednie "trusted/stable" hipotezy).
+
+### Główne odkrycia
+
+#### 1. f[28] bit `0x08` master = COOLING DEMAND, nie "sezon=chłodzenie"
+
+Wcześniejsze PROTOCOL stwierdzał: "f[28] +0x08 (bit 3) = chłodzenie aktywne (overlay sezon)".
+
+**Empiria 2026-05-16:** bit `0x08` SET wyłącznie gdy:
+- Sezon = Chłodzenie **AND**
+- T_pok > aktywny SP
+
+Sezon=Chłodz + T_pok ≤ SP → bit CLEAR (np. F0 baseline: Manual SP=23, T_pok=21.9 → `f[28]=0x03`).
+Po zmianie Manual SP na 20 (T_pok=23.1 > SP=20) → `f[28]=0x0B` (+0x08 demand).
+Powrót T_pok=SP → bit znika natychmiast.
+
+W Zimie i Lato bez bit `0x08` **nigdy** SET niezależnie od T_pok/SP.
+
+#### 2. f[24] master = binarny cooling demand sync flag
+
+PROTOCOL stwierdzał: "f[24] = 0x00/0x32/0x64 — Trusted Master/fresh AERO sync flag, reguła per sezon".
+
+**Empiria 2026-05-16:** w 308 ramkach Nano-master TYLKO 2 wartości:
+- `0x32` — baseline (no demand)
+- `0x00` — cooling demand active
+
+`0x64` nigdy nie wystąpił. f[24] paruje 1:1 z f[28] bit `0x08`.
+
+#### 3. f[28] bit `0x40` master ("trusted/stable") NIE ISTNIEJE
+
+PROTOCOL stwierdzał: "+0x40 (bit 6) = Trusted Master assertion. Nano wysyła w Manual+Zima+korekta_0+Wentylacja∈{Stop,B1,B2,B3}. ESP nigdy nie powinien wysyłać — wprowadza AERO w 'service mode TX off'."
+
+**Empiria 2026-05-16:** w 308 ramkach Nano-master w warunkach Manual+Zima+B1+korekta_0+Normal **bit `0x40` NIGDY nie SET**. Wszystkie obserwowane f[28]: `0x01`, `0x03`, `0x05`, `0x07`, `0x09`, `0x0B`, `0x0D`, `0x0F` (bieg ± cooling demand).
+
+**Wniosek:** "trusted/stable bit" był chimerą. Wcześniejsze obserwacje `0x40` prawdopodobnie pochodziły z ESP-mastera próbującego "udawać" Nano — ESP wysyłał `0x40`, AERO milczał (bo wartość błędna), wniosek był odwrócony (myśleliśmy że trzeba `0x40`, w rzeczywistości jego BRAK jest poprawny).
+
+To prawdopodobnie wyjaśnia długą serię problemów ESP-master vs AERO (2026-04-28 → 2026-05-12).
+
+#### 4. f[26] AERO E4(63) = wskaźnik trybu pracy
+
+PROTOCOL stwierdzał tylko "bieg 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrzenie".
+
+**Empiria 2026-05-16:** w obserwowanym zakresie tylko 3 wartości:
+- `0x00` — boot state (AERO post-power-on, przed pollem mastera)
+- `0x01` — normalny bieg
+- `0x04` — wietrzenie aktywne
+
+Wartości 2/3 (rzekomo B2/B3) nie wystąpiły — kodowanie biegu jest gdzie indziej (f[24-25] = aktualne %, można porównać z nastawami z E3#2).
+
+#### 5. Wietrzenie z Nano-master działa identycznie w 3 sezonach
+
+Historyczna hipoteza: "Wietrz nie działa w Lato/Chłodz" — **obalona definitywnie**.
+
+W każdym sezonie (Zima/Lato bez/Chłodz) komenda Wietrz ON ustawiała `f[27] +0x20` w master, AERO odbierał (`f[27] +0x08`), zmieniał obroty na nastawy Wietrz, ustawiał `f[26]=0x04`. Brak różnicy w protokole. Problem historyczny był specyficzny dla ESP-mastera (prawdopodobnie wynik wysyłania błędnego `f[28] 0x40`).
+
+#### 6. Wietrz + bypass + cooling demand są ortogonalne
+
+Test W9-special: Wietrz ON + auto-bypass open + demand SET — wszystkie 3 stany koegzystują bez konfliktu. AERO realizuje równolegle:
+- Wietrz fan boost (35/35 obroty z nastaw)
+- Auto-bypass open (free-cooling)
+- Cooling demand sygnał (utrzymany w master)
+
+#### 7. Hierarchia bypass
+
+Komenda user (E5 f[25]) jest nadrzędna nad demand. AERO logika:
+- OFF (`0x60`) → zawsze zamyka, ignoruje demand
+- ON (`0x62`) → zawsze otwiera, ignoruje demand
+- AUTO (`0x61`) → otwiera tylko gdy cooling demand bity SET przez master
+
+Threshold AERO dla open w AUTO+Chłodz: empirycznie między 0.1°C (zamknięty) a ~2.8°C (otwarty) różnicy T_pok−SP.
+
+#### 8. Rotator f[25-26] boot init `00,00`
+
+Po power-on Nano-master pierwsza ramka E4(29) src=0x21 ma `f[25-26] = 00,00`. Potem rotuje normalnie 01,YY → 02,MM → 03,DD → 01,YY... `00,00` nie wraca w normalnej pracy (jednorazowy "fresh master" wskaźnik).
+
+#### 9. Nano cold-boot — brak handshake
+
+Po power-on Nano nie wysyła żadnej specjalnej ramki init. Pierwsza ramka post-boot to **E3(29) src=0x44 (cykl #2)** — Nano pomija E4#01 bo wymaga przygotowania (T_pok read, demand calc, zegar). Pierwsze E4 master pojawia się w następnym cyklu (~8.5s później) z `f[25-26]=00,00`.
+
+#### 10. AERO post-boot state
+
+AERO ~1s po power-on wystawia E4(63) z `f[24-28] = 00,00,00,08,40` (fan stop, tryb boot, bypass zamknięty). Po otrzymaniu pierwszego polla mastera przechodzi w normalny tryb.
+
+### Implikacje dla ESP-master
+
+Cały dotychczasowy fix ESP-mastera (2026-04-28 → 2026-05-12) bazujący na wymuszaniu `f[28] |= 0x40` lub `f[24] = 0x64` był błędny. ESP powinien:
+- **NIGDY** nie wysyłać `f[28]` bit `0x40` (nie istnieje w Nano-master)
+- **NIGDY** nie wysyłać `f[24] = 0x64` (nie istnieje w Nano-master)
+- Bit `0x08` w f[28] (cooling demand) ustawiać tylko gdy Sezon=Chłodz AND T_pok>SP
+- f[24] dynamicznie: `0x00` gdy demand, `0x32` inaczej
+- Pierwsza ramka post-boot ESP może być E4#01 (zgodne z normalnym cyklem) — Nano też ostatecznie wysyła E4 w cyklu #2, brak handshake oznacza że nie jest to krytyczne
+
+---
+
 ## Wietrzenie z ESP-master — diagnostyka (2026-05-12 wieczór)
 
 **Setup:** ESP=Master, Nano=Slave id=2 (Faza A4 testu Nano Slave Sync). Cel: weryfikacja Wietrzenia w każdym sezonie.
