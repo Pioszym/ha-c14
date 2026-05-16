@@ -323,6 +323,11 @@ script:
       bytes: std::vector<uint8_t>
     then:
       - lambda: |-
+          // Empty bytes = boot-skip lub inny intentional skip — nie wysyłaj na UART
+          // (write_array z null pointer crashuje UART driver: "buffer null" → "uart marked as failed").
+          if (bytes.empty()) {
+            return;
+          }
           id(g_last_tx_ms) = millis();
           id(g_last_tx_name) = name;
           id(uart_bus).write_array(bytes.data(), bytes.size());
