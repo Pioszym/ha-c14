@@ -100,6 +100,13 @@ globals:
     type: bool
     restore_value: true
     initial_value: "true"    # default ON, sterowane z switch.master_on (VS niezależne)
+  - id: g_first_cycle_post_boot
+    type: bool
+    initial_value: "true"    # reset na każdym power-on (bez restore_value).
+                             # Pierwszy cykl post-boot pomija #1 E4(29) (jak Nano-master post-boot
+                             # startuje od E3#44 — wymaga T_pok read/zegar sync przed wysłaniem E4).
+                             # Wyjątek: gdy g_config_push_pending=true, #1 idzie jako config push
+                             # (slave boot wykryty w poprzednim cyklu nadrzędny względem boot-skip).
   - id: g_config_push_pending
     type: bool
     initial_value: "false"   # flaga: wykryto 80(2A), w nast. cyklu #1 wyslij E4(29) src=0x2A
@@ -342,10 +349,20 @@ script:
 
       # 1. E4(29) — komenda biegu + sezon + wietrzenie (PIERWSZA jak u Nano)
       # LUB jednorazowo E4(29) src=0x2A config push gdy wykryto 80(2A) od slave (g_config_push_pending)
+      # BOOT-SKIP: pierwsza ramka po power-on pomijana (jak Nano-master startuje od E3#44).
+      # Config push ma priorytet — jeśli pending, lecimy mimo boot-skip.
       - script.execute:
           id: tx_frame
           name: "1"
           bytes: !lambda |-
+            // BOOT-SKIP: pierwsza ramka post-boot pomijana (Nano-master startuje od E3#44).
+            // Config push override: jeśli slave boot wykryty → wysyłamy config push mimo boot-skip.
+            if (id(g_first_cycle_post_boot) && !id(g_config_push_pending)) {
+              id(g_first_cycle_post_boot) = false;
+              ESP_LOGW("c14m", "[BOOT] Pierwsza E4(29) pominieta (jak Nano post-boot)");
+              return std::vector<uint8_t>{};  // pusta ramka → tx_frame nie wysyła
+            }
+            id(g_first_cycle_post_boot) = false;
             // Jesli flaga pending → wyslij config push E4(29) src=0x2A
             if (id(g_config_push_pending)) {
               std::vector<uint8_t> f = {
@@ -1441,7 +1458,9 @@ switch:
     turn_on_action:
       - lambda: |-
           id(g_master_on) = true;
-          id(g_slave_ack) = false;  // reset ACK — będzie SET po wykryciu slave reactive
+          id(g_slave_ack) = false;          // reset ACK — będzie SET po wykryciu slave reactive
+          id(g_first_cycle_post_boot) = true;  // boot-skip pierwszej E4#1 (jak post-boot ESP)
+          id(g_rot_e4) = 0;                 // rotator boot init f[25-26]=00,00 dla pierwszej E4#1
           ESP_LOGW("c14m","=== MASTER ON (cykl Master Mini/Full wg switcha Master FULL) ===");
       - script.execute: master_cycle
     turn_off_action:
