@@ -208,7 +208,7 @@ E4,21,[cks],29,[F4],[F5],00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],
 | f[14-15] | HH,LL | **Aktywny setpoint** (śledzi tryb: Comfort/Eco/Manual/Poza domem) | KNOWN |
 | f[16-22] | `0x7E` ×7 | filler | UNKNOWN |
 | f[23] | `0x14` | stałe | UNKNOWN |
-| f[24] | `0x00/0x32/0x64` | **"Trusted Master / fresh AERO sync" flag** (korekta 2026-05-11 wieczór). `0x64` = trusted master z fabrycznym sparingiem + fresh AERO heartbeat (Nano tylko). `0x32` = "untrusted/unsynced master" — bezpieczna wartość, ESP-master ZAWSZE używa. `0x00` = obserwowane w Chłodz+Harm (Nano-specific). **ESP-master z fix 2026-05-11 wieczór: zawsze `0x32`** | KNOWN |
+| f[24] | `0x00/0x32/0x64` | **"Trusted Master / fresh AERO sync" flag** (korekta 2026-05-12). Reguła per sezon: **Chłodz → `0x00`** (Nano zawsze, ESP po fix 2026-05-12), **Zima/Lato bez → `0x32`** baseline. `0x64` = trusted master z fabrycznym sparingiem (Nano tylko, ~5% ramek w świeżym Manual+Zima+B1/B2/B3+Normal, sparowany z f[28] bit `0x40`). **ESP nigdy `0x64`** — empirycznie 2026-05-12: nawet bytewise-identyczna replikacja Nano wzoru (Manual+Zima+B1+Normal) wprowadza AERO w service mode TX off. | KNOWN |
 | f[25] | `0x00/0x01/0x02/0x03` | **Faza transmisji daty** (rotuje co cykl Master Full) | KNOWN |
 | f[26] | wartość daty | zależnie od f[25]: 0x00 init, rok mod 100, miesiąc 1-12, dzień 1-31 | KNOWN |
 | f[27] | bitfield | **tryb temp + sezon + wietrzenie** (patrz niżej) | KNOWN |

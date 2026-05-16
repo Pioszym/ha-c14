@@ -2,6 +2,128 @@
 
 Zapisane bugi, fałszywe tropy i lekcje z drogi. Dla bieżącej dokumentacji protokołu → [PROTOCOL.md](PROTOCOL.md).
 
+## Wietrzenie z ESP-master — diagnostyka (2026-05-12 wieczór)
+
+**Setup:** ESP=Master, Nano=Slave id=2 (Faza A4 testu Nano Slave Sync). Cel: weryfikacja Wietrzenia w każdym sezonie.
+
+**Stan początkowy:** Wietrzenie ON w ESP → AERO milczy we wszystkich sezonach.
+
+### Fix #1: bugfix #14 E3(29) zsynchronizowana z #2
+
+Druga ramka E3 trigger (#14, tylko w Master Full) miała **starą logikę stable bit `0x40`** (Manual+Zima only), pominiętą przy fixie z commit `8c0a7ea` (który usunął stable z #2). W Master Mini #14 nie leciało, więc bug nie był widoczny — ujawniłby się przy Master Full+Manual+Zima.
+
+**Fix:** #14 lambda przepisana 1:1 z #2 (bez stable bit, z obsługą Programy=Urlop/Poza domem).
+
+### Fix #2: f[24] sync flag warunkowy per sezon
+
+**Empiria z log 1228 (Nano-master, 560 ramek E4):**
+- Sezon=**Chłodz** → Nano ZAWSZE wysyłał `f[24]=0x00` (nie tylko w Wietrz)
+- Sezon=Zima/Lato bez → Nano `f[24]=0x32` baseline, `0x64` tylko w Manual+B1/B2/B3+Normal (~5% ramek, "trusted master" z fabrycznym sparingiem)
+
+**ESP poprzednio:** hardcoded `f[24]=0x32` zawsze (per fix 2026-05-11 wieczór). To było bezpieczne ale nie matchowało Nano w Chłodz.
+
+**Fix:** `f[24] = (sezon == Chłodz) ? 0x00 : 0x32`. Reverted previous "always 0x32" approach. ESP nadal nie wysyła `0x64` (patrz Test #3 niżej).
+
+### Odkrycie #1: AERO waliduje % wietrzenia (E3 f[14-15])
+
+**Wzór z testu manualnego:**
+
+| wyw | naw | AERO |
+|-----|-----|------|
+| 30 | 30 | ✓ |
+| 33 | 30 | ✓ |
+| 30 | 33 | ✓ |
+| 33 | 33 | ✗ silent |
+| 32 | 32 | ✓ |
+
+AERO ma cache % wietrzenia z poprzednich Nano sesji (30/30). ESP może zmieniać **jeden parametr na raz** — wtedy AERO akceptuje. Zmiana obu jednocześnie → odrzut. Hipoteza: rate-limited trust mechanism (analogicznie do bit `0x40`).
+
+**Konsekwencja:** ESP z UI HA defaultowo wysyłał 33/33% → milczenie w każdym sezonie. Po zmianie na 30/30 → Zima i Lato bez działają. Chłodz wciąż silent.
+
+### Odkrycie #2: zmiana biegu B1→B2 z aktywnym Wietrz wybija AERO
+
+Test: Lato bez+Wietrz+B1+32/32 działa, zmiana biegu na B2 (Wietrz wciąż ON) → AERO milknie. Auto-toggle Wietrz off→on nie pomaga (user empirycznie sprawdził).
+
+Hipoteza: każda zmiana parametru (sezon, bieg, oba %) podczas aktywnego Wietrz traktowana przez AERO jako "untrusted update". Rate-limit na max 1 zmiana per cykl.
+
+### Odkrycie #3: E5 f[28] — kod UI bieg × term × sezon (nieudokumentowany w PROTOCOL §3.7)
+
+Analiza 545 ramek E5 z log 1228 ujawniła **14 unikalnych wartości f[28]** (PROTOCOL podaje tylko proste 0/1/2/3).
+
+**Pełna lista (f[27]|f[28] z log 1228):**
+
+| Sezon (f[27]) | f[28] obserwowane |
+|---------------|-------------------|
+| `0x00` Zima | `0x00`, `0x01`, `0x02`, `0x03`, `0x04`, `0x05`, `0x0B`, `0x0E`, `0x15`, `0x16` |
+| `0x0A` Lato bez | `0x00`, `0x01`, `0x16` |
+| `0x14` Chłodz | `0x00`, `0x01`, `0x04`, `0x05`, `0x0B`, `0x14`, `0x15`, `0x16`, `0x18`, `0x19` |
+
+**Dekodowanie bitów:**
+
+| Bit | Maska | Znaczenie |
+|-----|-------|-----------|
+| 0-1 | `0x03` | bieg (`00`=Stop, `01`=B1, `10`=B2, `11`=B3) |
+| 2 | `0x04` | overlay Termostat=Manual |
+| 3 | `0x08` | ? (występuje w `0x0B`/`0x0E`/`0x18`/`0x19` — może Wentylacja=Harm-Urlop?) |
+| 4 | `0x10` | overlay Sezon=Chłodz UI |
+
+**Wzór dla Manual+Chłodz:**
+- B1 → `0x15` (`0x10|0x04|0x01`)
+- B2 → `0x16` (`0x10|0x04|0x02`)
+- B3 → `0x17` (`0x10|0x04|0x03`)
+
+**Wzór dla Harm+Chłodz:** prosty bieg `0x01`/`0x02`/`0x03` — bez overlay.
+
+**Status:** ESP w [esp02.yaml:639](esp02.yaml:639) wysyła zawsze prosty bieg `0x00`-`0x03`. Próbny fix (Manual+Chłodz → `0x14|bieg`) **nie odblokował** Chłodz+Wietrz (revert). Pozostaje do dalszej analizy — bit 3 nieznany, pełna macierz term×sezon×wentylacja niezweryfikowana.
+
+**Note 2026-05-12:** kod NIE jest dla slave Nano (slave nie wyświetla nic o biegach — potwierdzone empirycznie przez Piotra). Co to za "UI code" — niejasne. Może wewnętrzny stan AERO, master EEPROM tracking, albo artefakt historyczny.
+
+### Odkrycie #4: % per bieg w E3 f[20-25] — ESP ≠ Nano
+
+W całej sesji Nano log 1228 % per bieg były stałe (Nano zawsze nadawał te same wartości):
+
+| Pole | Nano (log 1228) | ESP (current UI) |
+|------|------------------|-------------------|
+| f[20] wyw B1 | `0x20` (32%) | `0x1E` (30%) |
+| f[21] wyw B2 | `0x23` (35%) | `0x1F` (31%) |
+| f[22] wyw B3 | `0x22` (34%) | `0x20` (32%) |
+| f[23] naw B1 | `0x23` (35%) | `0x1E` (30%) |
+| f[24] naw B2 | `0x25` (37%) | `0x1F` (31%) |
+| f[25] naw B3 | `0x23` (35%) | `0x20` (32%) |
+
+**Status:** w Zima/Lato bez+Wietrz różnica nie wpływa (AERO odpowiada), ale **potencjalnie powiązane z Chłodz+Wietrz silent** lub z walidacją per-bieg (analogicznie do % wietrzenia, max 1 zmiana per cykl).
+
+**Do sprawdzenia w następnej sesji:** ustawić w UI HA wartości Nano (32/35/34 wyw, 35/37/35 naw), retest Chłodz+Wietrz. Jeśli zacznie działać → AERO ma cache per-bieg podobnie do cache wietrzenia. Jeśli nie → różnica jest neutralna.
+
+### Test #3: replikacja Nano "trusted master" wzoru w EXACT Manual+Zima — OBALONA
+
+**Hipoteza usera:** może ESP powinien wysyłać `f[24]=0x64` + `f[28]|0x40` ale **tylko w wąskim wzorze Nano** (Manual+Zima+B1/B2/B3+Normal), nie zawsze. Może AERO akceptuje "trusted" przy spełnieniu dokładnego wzorca.
+
+**Test:** ESP nadawał `f[24]=0x64`, `f[27]=0x02`, `f[28]=0x43` (E4) i `0x53` (E3) w Manual+Zima+B1+Normal. **Bytewise identyczne** z Nano log 1228 12:57:48.
+
+**Wynik:** **AERO milknie natychmiast.** Po rewercie do `f[24]=0x32` bez stable bit — AERO wrócił do odpowiadania w ciągu cyklu.
+
+**Wniosek:** factory pairing nie jest "right moment" zależny — jest binarne. AERO odrzuca `0x64+0x40` od ESP niezależnie od kontekstu/wzoru/sezonu. Potwierdza HISTORY 2026-05-11 wieczór: ESP musi pozostać "untrusted master" (`f[24]∈{0x00,0x32}`, brak stable bit) na zawsze.
+
+### Status końcowy 2026-05-12
+
+| Sezon | Wietrz | Nano | ESP |
+|-------|--------|------|-----|
+| Zima | OFF | ✓ | ✓ |
+| Zima | ON | ✓ | ✓ |
+| Lato bez | OFF | ✓ | ✓ |
+| Lato bez | ON | ✓ | ✓ (po fix %=30/30) |
+| Chłodz | OFF | ✓ | ✓ |
+| Chłodz | ON | ✓ | **✗ wciąż silent** |
+
+**Otwarte:** Chłodz+Wietrz milczy mimo bytewise-identycznych ramek (po fix #1+#2). To NIE encoding ani sync flag — wszystkie stałe header pasują, f[27]/f[28] pasują, f[24]=0x00 jak Nano. Hipotezy do późniejszej eksploracji: rate-limit % cache per sezon (Chłodz może wymagać innych wartości niż 30/30), interakcja z setpointami w E5, sticky stan AERO po wcześniejszych nieudanych próbach.
+
+### Pełna analiza ramek
+
+`tests/2026-05-10_nano_master_mini/Analiza_ramek_2026-05-12.md` — unique values per byte position w E4 #1 i E3 #2 z całego log 1228, szczegóły f[24]=0x64 occurrences.
+
+---
+
 ## Bit 0x40 to "trusted master" assertion, NIE "stable config" (2026-05-11 wieczór)
 
 **Drugie odkrycie krytyczne tego dnia** — kontynuacja "AERO TX off" debugowania.
