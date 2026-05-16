@@ -605,9 +605,12 @@ script:
             v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;   // 0x60→0, 0x61→1, 0x62→2
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
+            // Checksum E3(29) src=0x44: K=0x23 (NIE 0xA3 jak inne ramki master!)
+            // Empiria 2026-05-17: ESP wysyłający E3 z K=0xA3 → cksum 0x84 zamiast 0x04 → AERO odrzuca → milknie.
+            // Nano-master zawsze używa K=0x23 dla E3 src=0x44.
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
-            f[2] = (s + 0xA3) & 0xFF;
+            f[2] = (s + 0x23) & 0xFF;
             // Publikuj do sensorów BUS (% nastawy)
             id(s_wyw_wiet_bus).publish_state(f[14]);
             id(s_naw_wiet_bus).publish_state(f[15]);
@@ -837,9 +840,10 @@ script:
                   v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;
                   if (id(g_wietrz_on)) v27 |= 0x20;
                   f[27] = v27;
+                  // Checksum E3(29) src=0x44: K=0x23 (jak #2)
                   uint16_t s = f[0] + f[1];
                   for (int i = 3; i <= 28; i++) s += f[i];
-                  f[2] = (s + 0xA3) & 0xFF;
+                  f[2] = (s + 0x23) & 0xFF;
                   return f;
             - delay: 800ms
 

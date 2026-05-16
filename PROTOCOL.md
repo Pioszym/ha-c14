@@ -150,13 +150,14 @@ Ramki ułożone w kolejności występowania w cyklu Master Full. Sekcja 3.1 opis
 
 Formuła: `f[2] = (f[0] + f[1] + sum(f[3]..f[28]) + K) & 0xFF`
 
-| K | Dotyczy ramek |
-|---|---------------|
-| `0xA3` | E4(29), E4(63), E5(29), E3(29), E2(29), F0(29), D0-D5(29), 81(29), 80(2X) — **wszystkie obserwowane src=0x44/0x21/0x63** |
-| `0x93` | wake-up `AA/AB/AC,44` (`f[2] = 0x06+id`) |
-| `0x23` | wake-up `AA/AB/AC,56` (`f[2] = 0x4A+id`) |
+K zależy od **typu ramki** (f[0]), niezależnie od src (f[1]). Empirycznie zweryfikowane na 11+ typach ramek z sesji Nano-master 2026-05-16:
 
-> Empirycznie zweryfikowane 2026-04-19. Wcześniejsza hipoteza (różne K dla różnych ramek głównych) była błędna.
+| K | Ramki |
+|---|-------|
+| **`0xA3`** | E4(29) src=0x21/0x2X/0x63, E5(29), E2(29), F0(29), E3(29) src=0x56 (iNEXT), AA/AB/AC(29) src=0x44 (wake-up) |
+| **`0x23`** | **E3(29) src=0x44** (trigger AERO), **81(29)**, **D0/D1/D2/D3/D4/D5(29)**, **8B/9F/82/8C/8D/8E/95(29)** (Master Full heartbeats), AA/AB/AC(29) src=0x56 (iNEXT) |
+
+> **Korekta 2026-05-17:** wcześniejszy PROTOCOL stwierdzał "K=0xA3 dla wszystkich src=44/21/63" — błędne uproszczenie. Co najmniej E3(29) src=0x44, 81(29), D0-D5(29) używają K=0x23. ESP-master wysyłający E3(29) src=0x44 z K=0xA3 → AERO odrzucał trigger jako uszkodzony → milczał. Patrz HISTORY 2026-05-17.
 
 #### f[3] — subtyp / master ID
 
