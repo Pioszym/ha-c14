@@ -157,15 +157,14 @@ globals:
   - id: g_thermostat
     type: uint8_t
     restore_value: true
-    initial_value: "2"      # 0=Harmonogram, 1=Urlop, 2=Manual (z f[27] w E4(29) src=21)
-  - id: g_harm_urlop
-    type: bool
-    restore_value: true
-    initial_value: "false"  # Wentylacja=Harm-Urlop: f[28]=bieg bez 0x40 + f[24]=0x32
+    initial_value: "2"      # ESP-UI rozszerzenie: 0=Eco, 1=Urlop, 2=Manual, 3=Comfort, 4=Poza domem
+                            # 0/3/4 → f[27] bity 0-1 = 0x00 (Harm w protokole; Nano EEPROM-slot decyduje Comfort/Eco/Poza)
+                            # 1 → f[27]=0x01 (Urlop), 2 → f[27]=0x02 (Manual)
+                            # ESP nie ma harmonogramu — user wybiera slot ręcznie przez ten select
   - id: g_program
     type: uint8_t
     restore_value: true
-    initial_value: "0"      # Programy: 0=Normal, 1=Poza domem (f[5] bit 0x04), 2=Urlop (f[28]=0x40)
+    initial_value: "0"      # Programy: 0=Normal, 1=Poza domem (f[5] bit 0x04), 2=Urlop (f[28]=0x00 validity=0)
   - id: g_rot_e4
     type: uint8_t
     initial_value: "0"      # rotator E4(29) src=21 f[25-26]: 0=00,00 init, 1=01,14, 2=02,01, 3=03,03 (potem 1→2→3→1)
@@ -359,17 +358,31 @@ script:
                 0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,
                 0x20,0x28,0x46,0x25,0x2D,0x4B,0x20,0x01,
                 0x53,0x23 };
-              // f[27]/f[28] dynamiczne z biezacych globals (zamiast hardcoded Zima/B1+stable)
-              // żeby slave po config push mial od razu aktualny sezon/bieg/termostat,
-              // a nie domyslny snapshot z testow 26.04
-              uint8_t v27 = id(g_thermostat) & 0x07;
-              if (id(g_season) == 1) v27 |= 0x08;       // Lato bez
-              else if (id(g_season) == 2) v27 |= 0x10;  // Chłodzenie
+              // f[27]/f[28] dynamiczne z biezacych globals — slave po config push
+              // ma od razu aktualny sezon/bieg/termostat.
+              // f[27]: bity 0-2 termostat, bit 3 Lato bez (0x08), bit 4 Chłodz (0x10), bit 5 wietrz (0x20).
+              uint8_t v27;
+              switch (id(g_thermostat)) {
+                case 1:  v27 = 0x01; break;  // Urlop
+                case 2:  v27 = 0x02; break;  // Manual
+                default: v27 = 0x00; break;  // Eco/Comfort/Poza domem → Harm w protokole
+              }
+              if (id(g_season) == 1) v27 |= 0x08;
+              else if (id(g_season) == 2) v27 |= 0x10;
               if (id(g_wietrz_on)) v27 |= 0x20;
               f[27] = v27;
+              // f[28] config push (E4(29) src=0x2X) — to OSOBNA ramka od cyklu master E4 src=0x21.
+              // Sprawdzone empirycznie (HISTORY 2026-04-26 test1/test2): bit 0x40 wymagany dla slave
+              // żeby przeszedł w stan synced. Tu zachowujemy starą logikę:
+              //   bit 0x40 (sync flag) gdy Termostat=Manual
+              //   bit 0x08 (cooling demand) gdy Sezon=Chłodz AND T_pok>SP
               uint8_t v28 = id(g_gear_cmd);
-              if (id(g_thermostat) == 2 && !id(g_harm_urlop)) v28 |= 0x40;
-              if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
+              if (id(g_thermostat) == 2 /* Manual */) v28 |= 0x40;
+              float t_pok_cp = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+              float sp_cp = (id(g_thermostat) == 2) ? id(g_sp_reczna)
+                          : (id(g_season) == 0)    ? id(g_sp_eco)
+                          :                          id(g_sp_chlodz);
+              if (id(g_season) == 2 /* Chłodz */ && t_pok_cp > sp_cp) v28 |= 0x08;
               f[28] = v28;
               uint16_t s2 = f[0] + f[1];
               for (int i = 3; i <= 28; i++) s2 += f[i];
@@ -411,21 +424,29 @@ script:
               f[9] = t.minute & 0xFF;
             }
             auto enc = [&f](int idx, float tv) {
+              // Clamp do zakresu Nano (0-40°C) — chroni magistralę przed bajtami spoza spec.
+              if (tv < 0.0f)  tv = 0.0f;
+              if (tv > 40.0f) tv = 40.0f;
               int16_t v = (int16_t)(tv * 10.0f) + 2000;
-              if (v < 0) v = 0;
               f[idx] = (v / 128) & 0xFF;
               f[idx+1] = (v % 128) & 0xFF;
             };
             // f[14-15] aktywny setpoint wg cross-table (PROTOCOL §5.6, fix 2026-05-10):
-            //   Programy=Poza/Urlop -> g_sp_poza
-            //   Term=Manual         -> g_sp_reczna
-            //   Term=Harm/Urlop + Zima       -> g_sp_eco
-            //   Term=Harm/Urlop + Lato/Chlodz -> g_sp_chlodz
+            //   Programy=Poza/Urlop  -> g_sp_poza (nadpisuje Termostat)
+            //   Term=Manual          -> g_sp_reczna
+            //   Term=Comfort         -> g_sp_comfort (ESP-UI: jawny wybór slotu Comfort)
+            //   Term=Poza domem      -> g_sp_poza   (ESP-UI: jawny wybór slotu Poza domem)
+            //   Term=Eco/Urlop + Zima        -> g_sp_eco
+            //   Term=Eco/Urlop + Lato/Chlodz -> g_sp_chlodz
             float active_sp;
             if (id(g_program) == 1 /* Poza domem */ || id(g_program) == 2 /* Urlop */) {
               active_sp = id(g_sp_poza);
             } else if (id(g_thermostat) == 2 /* Manual */) {
               active_sp = id(g_sp_reczna);
+            } else if (id(g_thermostat) == 3 /* Comfort */) {
+              active_sp = id(g_sp_comfort);
+            } else if (id(g_thermostat) == 4 /* Poza domem */) {
+              active_sp = id(g_sp_poza);
             } else if (id(g_season) == 0 /* Zima */) {
               active_sp = id(g_sp_eco);
             } else {
@@ -440,40 +461,49 @@ script:
             if (t_pok < 5.0f) t_pok = 5.0f;
             if (t_pok > 35.0f) t_pok = 35.0f;
             enc(12, t_pok);
-            uint8_t v27 = id(g_thermostat) & 0x07;  // 0=Harmonogram, 1=Urlop, 2=Manual
+            // Cooling demand flag (PROTOCOL §3.2 + HISTORY 2026-05-16 empiria 308 ramek Nano):
+            //   SET wyłącznie gdy: Sezon=Chłodzenie AND T_pok > aktywny SP
+            //   W Zimie i Lato bez Nano-master NIGDY nie wystawia tego bitu (niezależnie od T_pok/SP).
+            //   Wpływ: f[28] |= 0x08 oraz f[24] = 0x00 (paruje 1:1).
+            //   Programy=Urlop wyłącza wentylację → demand też CLEAR (i tak f[28]=0x00).
+            bool cooling_demand = (id(g_season) == 2 /* Chłodz */)
+                                  && (t_pok > active_sp)
+                                  && (id(g_program) != 2 /* nie Urlop */);
+            // f[27] bity 0-1: 0x00=Harm, 0x01=Urlop, 0x02=Manual.
+            // ESP-UI 0/3/4 (Eco/Comfort/Poza domem) wszystkie → Harm w protokole; różnica tylko w f[14-15].
+            uint8_t v27;
+            switch (id(g_thermostat)) {
+              case 1:  v27 = 0x01; break;  // Urlop
+              case 2:  v27 = 0x02; break;  // Manual
+              default: v27 = 0x00; break;  // Eco/Comfort/Poza domem → Harm
+            }
             if (id(g_season) == 1) v27 |= 0x08;
             else if (id(g_season) == 2) v27 |= 0x10;
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
-            // f[28]: bieg + flagi (PROTOCOL §3.2, korekta krytyczna 2026-05-11):
-            //  Programy=Urlop      → 0x00 (validity=0)
-            //  Programy=Poza domem → g_gear_poza + chlodz overlay
-            //  Programy=Normal     → bieg z g_gear_cmd + chlodz overlay
+            // f[28]: bieg + cooling demand (PROTOCOL §3.2 + HISTORY 2026-05-16):
+            //  Programy=Urlop      → 0x00 (validity=0, brak biegu)
+            //  Programy=Poza domem → g_gear_poza (+0x08 jeśli cooling_demand)
+            //  Programy=Normal     → g_gear_cmd  (+0x08 jeśli cooling_demand)
             //
-            // STABLE BIT 0x40 NIGDY NIE WYSYLANE od ESP-master.
-            // Empiria 2026-05-11: AERO milczy gdy ESP wysyla stable+sync w Manual+Zima.
-            // Hipoteza: stable bit + f[24]=0x64 wymagaja handshake/sparing fabrycznego
-            // (jak Nano-master). ESP-master bez tego sparingu nie ma "uprawnien" do nadawania
-            // synced state - AERO go odrzuca. Empirycznie Nano w 12:28-12:36 (Manual+Lato bez)
-            // nadawal bez stable+sync i AERO odpowiadal -> ten tryb jest bezpieczny dla ESP.
+            // BIT 0x40 NIGDY NIE WYSYŁANE (empirycznie obalone 2026-05-16: Nano-master
+            // w 308 ramkach nigdy nie wysyłał tego bitu, hipotezy o "trusted/stable
+            // master" były artefaktem błędnych testów ESP-mastera).
             uint8_t v28;
             if (id(g_program) == 2 /* Urlop */) {
               v28 = 0x00;
             } else if (id(g_program) == 1 /* Poza domem */) {
               v28 = id(g_gear_poza);
-              if (id(g_season) == 2) v28 |= 0x08;
             } else {
               v28 = id(g_gear_cmd);
-              if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
             }
+            if (cooling_demand) v28 |= 0x08;
             f[28] = v28;
-            // f[24] sync flag wg empirii Nano-master (log 1228, 2026-05-10):
-            //   Chłodz → 0x00 (Nano zawsze)
-            //   Zima/Lato bez → 0x32 (Nano zawsze)
-            // EKSPERYMENT 2026-05-12 OBALONY: ESP wysyłający 0x64+0x40 w EXACT Manual+Zima+B1+Normal
-            // (bytewise identycznie do Nano log 1228 12:57:48) → AERO milczy.
-            // Potwierdza HISTORY 2026-05-11 wieczór: factory pairing wymagany, ESP nigdy nie 0x64.
-            f[24] = (id(g_season) == 2 /* Chłodz */) ? 0x00 : 0x32;
+            // f[24] sync flag (PROTOCOL §3.2 + HISTORY 2026-05-16):
+            //   0x00 = cooling demand active (paruje z f[28] bit 0x08)
+            //   0x32 = baseline (no demand)
+            //   0x64 NIGDY (empirycznie: Nano-master nie używa tej wartości w master mode).
+            f[24] = cooling_demand ? 0x00 : 0x32;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + 0xA3) & 0xFF;
@@ -548,17 +578,26 @@ script:
             f[23] = id(g_naw_b1);
             f[24] = id(g_naw_b2);
             f[25] = id(g_naw_b3);
-            // bieg per Programy + chlodz overlay (synchronizacja z E4):
+            // f[28] E3 master: bieg + znacznik typu 0x10 + cooling demand 0x08
+            // (PROTOCOL §3.3, synchronizacja z E4 master). Bit 0x40 NIGDY (empiria 2026-05-16).
             //   Urlop      → 0 (validity=0)
             //   Poza domem → g_gear_poza
             //   Normal     → g_gear_cmd
-            // f[28] = bieg | 0x10 marker | 0x40 stable (warunkowo, patrz E4 lambda — eksperyment 2026-05-12)
+            //   demand: Sezon=Chłodz AND T_pok>aktywny_sp
             uint8_t v28;
             if (id(g_program) == 2) v28 = 0x00;
             else if (id(g_program) == 1) v28 = id(g_gear_poza);
             else v28 = id(g_gear_cmd);
-            if (id(g_season) == 2 && !id(g_harm_urlop) && id(g_program) != 2) v28 |= 0x08;
-            // stable bit 0x40 NIGDY w ESP (eksperyment 2026-05-12 obalony — patrz E4 lambda)
+            {
+              float t_pok_e3 = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+              float sp_e3 = (id(g_program) == 1 || id(g_program) == 2) ? id(g_sp_poza)
+                          : (id(g_thermostat) == 2) ? id(g_sp_reczna)
+                          : (id(g_thermostat) == 3) ? id(g_sp_comfort)
+                          : (id(g_thermostat) == 4) ? id(g_sp_poza)
+                          : (id(g_season) == 0)     ? id(g_sp_eco)
+                          :                           id(g_sp_chlodz);
+              if (id(g_season) == 2 && t_pok_e3 > sp_e3 && id(g_program) != 2) v28 |= 0x08;
+            }
             f[28] = v28 | 0x10;
             // f[27] = sezon | bypass_cmd | wietrz (PROTOCOL §3.3, korekta 2026-05-10):
             //   sezon szyld:  Zima=0x00, Lato bez=0x08, Chłodz=0x10
@@ -618,9 +657,11 @@ script:
               0x11,0x36,0x11,0x2C,0x11,0x18,0x00,0x30,0x7E,0x00,0x7E,0x00,
               0x00,0x61,0x00,0x00,0x00,0x23 };
             // Kodowanie temperatury: val = temp*10 + 2000 -> H=val/128, L=val%128
+            // Clamp 0-40°C (zakres Nano) — chroni magistralę przed bajtami spoza spec.
             auto enc = [&f](int idx, float t) {
+              if (t < 0.0f)  t = 0.0f;
+              if (t > 40.0f) t = 40.0f;
               int16_t v = (int16_t)(t * 10.0f) + 2000;
-              if (v < 0) v = 0;
               f[idx] = (v / 128) & 0xFF;
               f[idx+1] = (v % 128) & 0xFF;
             };
@@ -775,13 +816,23 @@ script:
                   f[23] = id(g_naw_b1);
                   f[24] = id(g_naw_b2);
                   f[25] = id(g_naw_b3);
-                  // f[28] = bieg | 0x10 marker | 0x40 stable (warunkowo, patrz #2)
+                  // f[28] E3 master #14 (Master Full second trigger):
+                  // bieg | 0x10 marker | 0x08 cooling demand (patrz #2 logika identyczna)
                   uint8_t v28;
                   if (id(g_program) == 2) v28 = 0x00;
                   else if (id(g_program) == 1) v28 = id(g_gear_poza);
                   else v28 = id(g_gear_cmd);
-                  if (id(g_season) == 2 && !id(g_harm_urlop) && id(g_program) != 2) v28 |= 0x08;
-                  // stable bit 0x40 NIGDY w ESP (eksperyment 2026-05-12 obalony — patrz E4 lambda)
+                  {
+                    float t_pok_14 = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+                    float sp_14 = (id(g_program) == 1 || id(g_program) == 2) ? id(g_sp_poza)
+                                : (id(g_thermostat) == 2) ? id(g_sp_reczna)
+                                : (id(g_thermostat) == 3) ? id(g_sp_comfort)
+                                : (id(g_thermostat) == 4) ? id(g_sp_poza)
+                                : (id(g_season) == 0)     ? id(g_sp_eco)
+                                :                           id(g_sp_chlodz);
+                    if (id(g_season) == 2 && t_pok_14 > sp_14 && id(g_program) != 2) v28 |= 0x08;
+                  }
+                  // bit 0x40 NIGDY w ESP (empiria 2026-05-16 — Nano-master też nigdy nie wystawia)
                   f[28] = v28 | 0x10;
                   // f[27] = sezon | bypass_cmd | wietrz — patrz #2 (PROTOCOL §3.3, korekta 2026-05-10)
                   uint8_t v27 = 0x00;
@@ -1238,10 +1289,13 @@ interval:
                   // Aktywny setpoint
                   float sp = ((f[14] * 128) + (f[15] % 128) - 2000) / 10.0f;
                   if (sp > 5 && sp < 35) id(s_sp_active_bus).publish_state(sp);
-                  // Program (z f[5] bit 0x04 + f[28]=0x02)
-                  bool harm_active = (f[5] & 0x04) != 0;
-                  // Programy: Urlop > Poza domem > Normal
-                  const char* prog = (f[28] == 0x40) ? "Urlop" : (harm_active ? "Poza domem" : "Normal");
+                  // Programy (PROTOCOL §5.5):
+                  //   Urlop      → f[28]=0x00 (validity=0, bieg=0)
+                  //   Poza domem → f[5] bit 0x04 SET (g_program=1)
+                  //   Normal     → standard (g_program=0, brak bit 0x04, validity=1)
+                  bool poza_active = (f[5] & 0x04) != 0;
+                  bool urlop_active = (f[28] == 0x00);  // validity=0 = Programy=Urlop
+                  const char* prog = urlop_active ? "Urlop" : (poza_active ? "Poza domem" : "Normal");
                   id(s_program_bus).publish_state(prog);
                   // s_wentylacja_bus przeniesione do lambda RX AERO E4(63) - faktyczny bieg z AERO
                   // Zegar + dow z f[7-9]
@@ -1440,21 +1494,21 @@ select:
     name: "Wentylacja"
     id: sel_gear
     icon: mdi:fan
-    options: ["Harmonogram", "Harm-Urlop", "Bieg 3", "Bieg 2", "Bieg 1", "Stop"]
+    # Harmonogram/Harm-Urlop usunięte: ESP nie ma harmonogramu wentylacji (sloty w EEPROM Nano).
+    # Dla "wyłącz na wyjazd" jest Programy=Urlop (f[28]=0x00, validity=0) — patrz select Program.
+    options: ["Bieg 3", "Bieg 2", "Bieg 1", "Stop"]
     initial_option: "Bieg 1"
     restore_value: true
     optimistic: true
     set_action:
       - lambda: |-
-          if      (x == "Stop")        { id(g_gear_cmd) = 0x01; id(g_harm_urlop) = false; }
-          else if (x == "Bieg 1")      { id(g_gear_cmd) = 0x03; id(g_harm_urlop) = false; }
-          else if (x == "Bieg 2")      { id(g_gear_cmd) = 0x05; id(g_harm_urlop) = false; }
-          else if (x == "Bieg 3")      { id(g_gear_cmd) = 0x07; id(g_harm_urlop) = false; }
-          else if (x == "Harmonogram") { id(g_harm_urlop) = false; }  // protokolowo identyczne z Manual+aktualny_bieg, slave nie odrozni
-          else if (x == "Harm-Urlop")  { id(g_harm_urlop) = true;  }  // bieg z g_gear_cmd, ale bez bitu 0x40 + f[24]=0x32
+          if      (x == "Stop")   id(g_gear_cmd) = 0x01;
+          else if (x == "Bieg 1") id(g_gear_cmd) = 0x03;
+          else if (x == "Bieg 2") id(g_gear_cmd) = 0x05;
+          else if (x == "Bieg 3") id(g_gear_cmd) = 0x07;
 
   - platform: template
-    name: "Wentylacja Poza domem / Urlop"
+    name: "Wentylacja Poza domem lub Urlop"
     id: sel_gear_poza
     icon: mdi:home-export-outline
     options: ["Bieg 3", "Bieg 2", "Bieg 1", "Stop"]
@@ -1473,15 +1527,19 @@ select:
     name: "Termostat"
     id: sel_termostat
     icon: mdi:thermostat
-    options: ["Harmonogram", "Urlop", "Manual"]
+    # 5 opcji: Comfort/Eco/Poza domem to rozbicie protokolowego "Harm" (f[27]=0x00) wg slotu harmonogramu Nano.
+    # ESP nie ma harmonogramu — user wybiera slot ręcznie, ESP kopiuje odpowiedni setpoint z E5 do E4 f[14-15].
+    options: ["Comfort", "Eco", "Manual", "Poza domem", "Urlop"]
     initial_option: "Manual"
     restore_value: true
     optimistic: true
     set_action:
       - lambda: |-
-          if      (x == "Harmonogram") id(g_thermostat) = 0;
-          else if (x == "Urlop")       id(g_thermostat) = 1;
-          else if (x == "Manual")      id(g_thermostat) = 2;
+          if      (x == "Eco")        id(g_thermostat) = 0;
+          else if (x == "Urlop")      id(g_thermostat) = 1;
+          else if (x == "Manual")     id(g_thermostat) = 2;
+          else if (x == "Comfort")    id(g_thermostat) = 3;
+          else if (x == "Poza domem") id(g_thermostat) = 4;
           ESP_LOGW("c14m","Termostat: %s (0x%02X)", x.c_str(), id(g_thermostat));
 
   - platform: template
@@ -1518,13 +1576,13 @@ select:
     name: "Sezon"
     id: sel_season
     icon: mdi:weather-partly-snowy
-    options: ["Zima ogrzewania", "Lato bez ogrz/chlodz", "Chlodzenie"]
-    initial_option: "Zima ogrzewania"
+    options: ["Zima ogrzewanie", "Lato bez ogrz/chlodz", "Chlodzenie"]
+    initial_option: "Zima ogrzewanie"
     restore_value: true
     optimistic: true
     set_action:
       - lambda: |-
-          if      (x == "Zima ogrzewania")       id(g_season) = 0;
+          if      (x == "Zima ogrzewanie")       id(g_season) = 0;
           else if (x == "Lato bez ogrz/chlodz")  id(g_season) = 1;
           else if (x == "Chlodzenie")            id(g_season) = 2;
           ESP_LOGW("c14m","Sezon: %s (%d)", x.c_str(), id(g_season));
@@ -1653,8 +1711,8 @@ number:
     name: "Temp Comfort"
     id: n_sp_comfort
     icon: mdi:thermometer-high
-    min_value: 10
-    max_value: 30
+    min_value: 0
+    max_value: 40
     step: 0.5
     initial_value: 23.0
     restore_value: true
@@ -1667,8 +1725,8 @@ number:
     name: "Temp Eco zima"
     id: n_sp_eco
     icon: mdi:thermometer-low
-    min_value: 10
-    max_value: 30
+    min_value: 0
+    max_value: 40
     step: 0.5
     initial_value: 21.0
     restore_value: true
@@ -1681,8 +1739,8 @@ number:
     name: "Temp Eco chlodzenie"
     id: n_sp_chlodz
     icon: mdi:snowflake-thermometer
-    min_value: 10
-    max_value: 30
+    min_value: 0
+    max_value: 40
     step: 0.5
     initial_value: 23.0
     restore_value: true
@@ -1695,8 +1753,8 @@ number:
     name: "Temp Reczna"
     id: n_sp_reczna
     icon: mdi:thermometer-auto
-    min_value: 10
-    max_value: 30
+    min_value: 0
+    max_value: 40
     step: 0.5
     initial_value: 22.0
     restore_value: true
@@ -1709,8 +1767,8 @@ number:
     name: "Temp Poza domem"
     id: n_sp_poza
     icon: mdi:home-export-outline
-    min_value: 10
-    max_value: 30
+    min_value: 0
+    max_value: 40
     step: 0.5
     initial_value: 20.0
     restore_value: true
