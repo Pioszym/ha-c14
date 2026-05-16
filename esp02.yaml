@@ -99,11 +99,7 @@ globals:
   - id: g_master_on
     type: bool
     restore_value: true
-    initial_value: "true"    # default ON, sterowane z select.c14_rola
-  - id: g_slave_on
-    type: bool
-    restore_value: true
-    initial_value: "false"   # sterowane z select.c14_rola (Rola=Slave aktywuje VS)
+    initial_value: "true"    # default ON, sterowane z switch.master_on (VS niezależne)
   - id: g_config_push_pending
     type: bool
     initial_value: "false"   # flaga: wykryto 80(2A), w nast. cyklu #1 wyslij E4(29) src=0x2A
@@ -1145,10 +1141,10 @@ script:
     then:
       - lambda: |-
           if (vs_id < 2 || vs_id > 20) return;
-          // Zabezpieczenie: 80 boot leci na bus tylko w Rola=Slave (zeby nie wprowadzac mastera w blad)
-          if (!id(g_slave_on)) {
-            ESP_LOGW("c14m", "[SLAVE] 80 boot id=%d skipped (Rola != Slave)", vs_id);
-            return;
+          // VS niezależne od master_on — user świadomie włącza switch VS gdy chce udać slave.
+          // Bezpieczeństwo: gdy master_on=true równolegle z VS, można dostać kolizję TX (warn).
+          if (id(g_master_on)) {
+            ESP_LOGW("c14m", "[VS] 80 boot id=%d wysylany pomimo Master ON (mozliwa kolizja TX)", vs_id);
           }
           std::vector<uint8_t> f = {
             0x80,0x44,0x5F,0x2A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
@@ -1432,7 +1428,26 @@ switch:
       - lambda: 'id(g_vs_5) = false; ESP_LOGW("c14m","=== VS id=5 OFF ===");'
 
   - platform: template
-    name: "C14 Master Full"
+    name: "Master ON"
+    id: sw_master_on
+    icon: mdi:server-network
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    lambda: 'return id(g_master_on);'
+    turn_on_action:
+      - lambda: |-
+          id(g_master_on) = true;
+          id(g_slave_ack) = false;  // reset ACK — będzie SET po wykryciu slave reactive
+          ESP_LOGW("c14m","=== MASTER ON (cykl Master Mini/Full wg switcha Master FULL) ===");
+      - script.execute: master_cycle
+    turn_off_action:
+      - lambda: |-
+          id(g_master_on) = false;
+          id(g_slave_ack) = false;
+          ESP_LOGW("c14m","=== MASTER OFF (ESP pasywny, VS dziala jesli wlaczone osobno) ===");
+
+  - platform: template
+    name: "Master FULL"
     id: sw_master_full
     icon: mdi:format-list-numbered
     optimistic: true
@@ -1463,32 +1478,19 @@ switch:
 
 select:
   - platform: template
-    name: "C14 Rola"
-    id: sel_rola
-    icon: mdi:account-switch
-    options: ["OFF", "Master", "Slave"]
-    initial_option: "Master"
+    name: "Bypass"
+    id: sel_bypass
+    icon: mdi:valve
+    options: ["OFF", "AUTO", "ON"]
+    initial_option: "AUTO"
     restore_value: true
     optimistic: true
     set_action:
       - lambda: |-
-          if (x == "Master") {
-            id(g_master_on) = true;
-            id(g_slave_on) = false;
-            id(g_slave_ack) = false;  // reset ACK - bedzie ustawione po wykryciu slave reactive
-            ESP_LOGW("c14m","=== ROLA: MASTER (VS niezalezne, mozna laczyc Master+VS dla testu lancucha) ===");
-            id(master_cycle).execute();  // start petli (jesli juz leci, mode:queued zakolejkuje)
-          } else if (x == "Slave") {
-            id(g_master_on) = false;
-            id(g_slave_on) = true;
-            id(g_slave_ack) = false;
-            ESP_LOGW("c14m","=== ROLA: SLAVE (VS id=2..5 wlaczone switchami symuluja slave'y) ===");
-          } else {
-            id(g_master_on) = false;
-            id(g_slave_on) = false;
-            id(g_slave_ack) = false;
-            ESP_LOGW("c14m","=== ROLA: OFF (pasywny, VS dziala jesli wlaczone switchami) ===");
-          }
+          if      (x == "OFF")  id(g_bypass_cmd) = 0x60;
+          else if (x == "AUTO") id(g_bypass_cmd) = 0x61;
+          else if (x == "ON")   id(g_bypass_cmd) = 0x62;
+          ESP_LOGW("c14m","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
 
   - platform: template
     name: "Wentylacja"
@@ -1556,21 +1558,6 @@ select:
           else if (x == "Poza domem") id(g_program) = 1;
           else if (x == "Urlop")      id(g_program) = 2;
           ESP_LOGW("c14m","Program: %s (%d)", x.c_str(), id(g_program));
-
-  - platform: template
-    name: "Bypass"
-    id: sel_bypass
-    icon: mdi:valve
-    options: ["OFF", "AUTO", "ON"]
-    initial_option: "AUTO"
-    restore_value: true
-    optimistic: true
-    set_action:
-      - lambda: |-
-          if      (x == "OFF")  id(g_bypass_cmd) = 0x60;
-          else if (x == "AUTO") id(g_bypass_cmd) = 0x61;
-          else if (x == "ON")   id(g_bypass_cmd) = 0x62;
-          ESP_LOGW("c14m","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
 
   - platform: template
     name: "Sezon"
