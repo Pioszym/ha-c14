@@ -467,8 +467,13 @@ script:
               if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
             }
             f[28] = v28;
-            // f[24] = 0x32 ZAWSZE (unsynced). 0x64 wymaga handshake AERO ktorego ESP nie ma.
-            f[24] = 0x32;
+            // f[24] sync flag wg empirii Nano-master (log 1228, 2026-05-10):
+            //   Chłodz → 0x00 (Nano zawsze)
+            //   Zima/Lato bez → 0x32 (Nano zawsze)
+            // EKSPERYMENT 2026-05-12 OBALONY: ESP wysyłający 0x64+0x40 w EXACT Manual+Zima+B1+Normal
+            // (bytewise identycznie do Nano log 1228 12:57:48) → AERO milczy.
+            // Potwierdza HISTORY 2026-05-11 wieczór: factory pairing wymagany, ESP nigdy nie 0x64.
+            f[24] = (id(g_season) == 2 /* Chłodz */) ? 0x00 : 0x32;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + 0xA3) & 0xFF;
@@ -547,12 +552,13 @@ script:
             //   Urlop      → 0 (validity=0)
             //   Poza domem → g_gear_poza
             //   Normal     → g_gear_cmd
-            // f[28] = bieg | 0x10 marker (BEZ stable bit 0x40 - patrz E4 lambda komentarz)
+            // f[28] = bieg | 0x10 marker | 0x40 stable (warunkowo, patrz E4 lambda — eksperyment 2026-05-12)
             uint8_t v28;
             if (id(g_program) == 2) v28 = 0x00;
             else if (id(g_program) == 1) v28 = id(g_gear_poza);
             else v28 = id(g_gear_cmd);
             if (id(g_season) == 2 && !id(g_harm_urlop) && id(g_program) != 2) v28 |= 0x08;
+            // stable bit 0x40 NIGDY w ESP (eksperyment 2026-05-12 obalony — patrz E4 lambda)
             f[28] = v28 | 0x10;
             // f[27] = sezon | bypass_cmd | wietrz (PROTOCOL §3.3, korekta 2026-05-10):
             //   sezon szyld:  Zima=0x00, Lato bez=0x08, Chłodz=0x10
@@ -769,13 +775,14 @@ script:
                   f[23] = id(g_naw_b1);
                   f[24] = id(g_naw_b2);
                   f[25] = id(g_naw_b3);
-                  uint8_t v28 = id(g_gear_cmd);
-                  if (id(g_season) == 2 && !id(g_harm_urlop)) v28 |= 0x08;
-                  // f[28] = bieg | 0x10 marker | stable warunkowo (jak Nano-master per #2)
-                  uint8_t v28_stable = 0;
-                  if (id(g_thermostat) == 2 /* Manual */ && !id(g_harm_urlop)
-                      && id(g_season) == 0 /* Zima */) v28_stable = 0x40;
-                  f[28] = v28 | 0x10 | v28_stable;
+                  // f[28] = bieg | 0x10 marker | 0x40 stable (warunkowo, patrz #2)
+                  uint8_t v28;
+                  if (id(g_program) == 2) v28 = 0x00;
+                  else if (id(g_program) == 1) v28 = id(g_gear_poza);
+                  else v28 = id(g_gear_cmd);
+                  if (id(g_season) == 2 && !id(g_harm_urlop) && id(g_program) != 2) v28 |= 0x08;
+                  // stable bit 0x40 NIGDY w ESP (eksperyment 2026-05-12 obalony — patrz E4 lambda)
+                  f[28] = v28 | 0x10;
                   // f[27] = sezon | bypass_cmd | wietrz — patrz #2 (PROTOCOL §3.3, korekta 2026-05-10)
                   uint8_t v27 = 0x00;
                   if (id(g_season) == 1) v27 |= 0x08;
