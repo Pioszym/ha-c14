@@ -576,11 +576,16 @@ Druga forma wake-up: `AA/AB/AC,56,4C/4D/4E,29,0x00×26`.
 - Inny payload (`0x00` zamiast `0x7E`), inny CRC (K=`0x23` zamiast K=`0xA3`)
 - Rola niejasna — być może osobny kanał dla EX4/iNEXT/rozszerzeń
 
-**CRC wake-up (zweryfikowane empirycznie 2026-05-17):**
+**CRC wake-up (zweryfikowane empirycznie 2026-05-17 z log Nano-master Master Full 2026-05-10):**
 - src=0x44: `f[2] = (f[0]+f[1]+f[3]+25×0x7E + 0xA3) & 0xFF = 0x06+id` (K=`0xA3`)
 - src=0x56: `f[2] = (f[0]+f[1]+f[3]+25×0x00 + 0x23) & 0xFF = 0x4A+id` (K=`0x23`)
 
-Wcześniejszy PROTOCOL stwierdzał K=`0x93` dla src=0x44 — empirycznie obalone (K=`0xA3`, zgodnie z innymi ramkami z f[1]=0x44 jak E2/F0/AA).
+Empiria z `tests/2026-05-10_nano_master_mini/log_esp02_202605101228.log.gz` @ 12:28:49 — Nano-master Master Full sweep id=2/3/4:
+- `AA,44,08,29,7E×26,23` → cksum 0x08 (id=2) → K=`0xA3` ✓
+- `AA,56,4C,29,00×26,23` → cksum 0x4C (id=2) → K=`0x23` ✓
+- `AB,44,09,29,7E×26,23` → cksum 0x09 (id=3) → K=`0xA3` ✓
+
+Wcześniejszy PROTOCOL stwierdzał K=`0x93` dla src=0x44 — empirycznie obalone.
 
 ### 3.15 Ramki asynchroniczne (poza cyklem)
 
