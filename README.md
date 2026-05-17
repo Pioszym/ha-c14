@@ -1,6 +1,6 @@
 # ha-c14
 
-ESP32 jako master/bridge/slave na magistrali C14 (COMPIT/PRO-VENT) do rekuperatora AERO 3B z panelem pokojowym Nano Color CTP.
+ESP32 jako master/bridge/slave na magistrali C14 (COMPIT/PRO-VENT) do rekuperatora AERO3Bv2 z panelem pokojowym Nano Color CTP PRO5v10.
 
 ## Pliki
 
