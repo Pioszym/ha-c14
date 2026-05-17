@@ -925,6 +925,12 @@ ESP VS poprawnie echo'uje (Wietrz OFF), Nano slave trzyma swój bit 5 = `0x20` (
 
 **Sezon (bity 3-4) JEST echo'owany** — test 14:02 (master Lato bez → Chłodz): Nano slave `0x2A` → `0x32` (bit 3 znikł, bit 4 pojawił się synchronicznie z masterem).
 
+**Termostat (bity 0-1) NIE jest echo'owany** — test 14:08 (master Harm → Manual): Nano slave wciąż `0x32` (Manual lokalny od początku), brak echa zmiany. Slave trzyma własny tryb termostatu w EEPROM, niezmienny dopóki user nie zmieni lokalnie na panelu slave.
+
+**f[28] (bieg + cooling demand) lokalny w slave** — test 14:08: master `f[28]` `0x0B` → `0x03` (demand zniknął bo Manual SP=25 > T_pok), Nano slave wciąż `0x0B` (B1 + demand z lokalnej pamięci). Slave nie zarządza biegiem AERO ani nie reaguje na master demand — to jego echo z czasu gdy był masterem.
+
+**Implementacja ESP VS** (esp02.yaml linia ~1146): kopiuje całe `f[27]` z mastera (`f[27] = id(g_m_f27)`), więc echo'uje też Termostat i Wietrz — to różni go od real Nano slave który trzyma te lokalnie. Akceptowalne uproszczenie — AERO ignoruje slave reply, więc semantyka nie ma wpływu. Real bytewise match wymagałby symulacji własnego stanu slave (Termostat/Wietrz/SP/bieg/demand z lokalnej "EEPROM").
+
 ### 6.3 Co slave wysyła do mastera (raportuje swój stan)
 
 W ramce E4(29) src=0x21 z `f[3]=0x28+id` (patrz §3.13 dla pełnej tabeli bajtów):
