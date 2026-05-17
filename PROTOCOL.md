@@ -559,11 +559,11 @@ E4,21,[cks],2X,0A,40,00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],7E×
 | f[14-15] | HH,LL | **Aktywny setpoint** kopiowany z mastera | KNOWN |
 | f[16-22] | `0x7E` ×7 | filler (jak master) | UNKNOWN |
 | f[23] | `0x14` | stałe (jak master) | UNKNOWN |
-| f[24] | `0x32` / `0x64` | **NORMALNY (synced) = `0x64`**, AWARYJNY (unsynced) = `0x32`. Paruje z f[28] bit `0x40`. | KNOWN |
+| f[24] | `0x32` / `0x64` | **SYNCED = `0x64`** (z prawdziwym Nano-master + factory pairing), **UNSYNCED = `0x32`** (z ESP-master lub po długim braku komunikacji). Paruje z f[28] bit `0x40`. Empirycznie: Nano-slave w obecności ESP-master ZAWSZE `0x32`. | KNOWN |
 | f[25] | `0x00`-`0x03` | **Faza transmisji daty** kopiowana z mastera | KNOWN |
 | f[26] | wartość daty | rok/miesiąc/dzień zależnie od f[25] (kopia z mastera) | KNOWN |
 | f[27] | bitfield | tryb temp + sezon + wietrzenie kopiowane z mastera | KNOWN |
-| f[28] | `0x43` / `0x03` | **NORMALNY (synced) = `0x43`** (`0x40`\|`0x03`, B1 + sync flag), AWARYJNY = `0x03` (sam B1 bez sync). Slave **NIE komenderuje biegami** mimo wartości w `f[28]` — AERO ignoruje komendy z `f[3] ≠ 0x29` | KNOWN |
+| f[28] | `0x43` / `0x03` | **SYNCED = `0x43`** (`0x40`\|`0x03`, B1 + sync flag), **UNSYNCED = `0x03`** (sam B1). Paruje z f[24]. Slave **NIE komenderuje biegami** mimo wartości w `f[28]` — AERO ignoruje komendy z `f[3] ≠ 0x29`. ESP-VS (esp02.yaml) od 2026-05-17 emituje UNSYNCED (jak real Nano slave w obecności ESP-master). | KNOWN |
 | f[29] | `0x23` | terminator | KNOWN |
 
 **2 stany slave (synced vs unsynced)** — szczegóły w §5.
@@ -573,12 +573,14 @@ E4,21,[cks],2X,0A,40,00,[DOW],[HH],[MM],7E,00,[TPK_H],[TPK_L],[SP_H],[SP_L],7E×
 ### 3.14 AA/AB/AC(29) src=0x56 — iNEXT slot dla id=2/3/4 (cykl #23/25/27)
 
 Druga forma wake-up: `AA/AB/AC,56,4C/4D/4E,29,0x00×26`.
-- Inny payload (`0x00` zamiast `0x7E`), inny CRC (K=`0x23` zamiast K=`0x93`)
+- Inny payload (`0x00` zamiast `0x7E`), inny CRC (K=`0x23` zamiast K=`0xA3`)
 - Rola niejasna — być może osobny kanał dla EX4/iNEXT/rozszerzeń
 
-**CRC wake-up:**
-- src=0x44: `f[2] = (f[0]+f[1]+f[3]+25×0x7E + 0x93) & 0xFF = 0x06+id`
-- src=0x56: `f[2] = (f[0]+f[1]+f[3]+25×0x00 + 0x23) & 0xFF = 0x4A+id`
+**CRC wake-up (zweryfikowane empirycznie 2026-05-17):**
+- src=0x44: `f[2] = (f[0]+f[1]+f[3]+25×0x7E + 0xA3) & 0xFF = 0x06+id` (K=`0xA3`)
+- src=0x56: `f[2] = (f[0]+f[1]+f[3]+25×0x00 + 0x23) & 0xFF = 0x4A+id` (K=`0x23`)
+
+Wcześniejszy PROTOCOL stwierdzał K=`0x93` dla src=0x44 — empirycznie obalone (K=`0xA3`, zgodnie z innymi ramkami z f[1]=0x44 jak E2/F0/AA).
 
 ### 3.15 Ramki asynchroniczne (poza cyklem)
 
@@ -684,8 +686,10 @@ W E4(2X) src=21 obserwowane 2 wyraźne stany:
 
 | Stan | f[24] | f[28] | Kontekst |
 |------|-------|-------|----------|
-| **NORMALNY (synced)** | `0x64` (100%) | `0x43` (`0x40\|0x03` = sync flag + B1) | Nano slave w długiej, stabilnej pracy z prawdziwym Nano masterem |
-| **AWARYJNY (unsynced)** | `0x32` (50%) | `0x03` (sam B1, brak `0x40`) | Po eksperymentach z ESP master, długim braku komunikacji z masterem |
+| **SYNCED** | `0x64` (100%) | `0x43` (`0x40\|0x03` = sync flag + B1) | Nano slave w długiej, stabilnej pracy z prawdziwym Nano-masterem (factory pairing) |
+| **UNSYNCED** | `0x32` (50%) | `0x03` (sam B1, brak `0x40`) | Default w obecności ESP-master. Nano-slave po power-cycle z ESP-master ZAWSZE w UNSYNCED — sesja 2026-05-17 to potwierdziła empirycznie (Nano slave id=2 + ESP-master = `0x32`/`0x03` stabilnie) |
+
+**Implementacja ESP-VS slave** (esp02.yaml ~linia 1131, zmiana 2026-05-17): emituje UNSYNCED stan (`f[24]=0x32`, `f[28] = bieg & 0x07` bez bitu `0x40`), bytewise jak real Nano-slave. Wcześniej VS hardcoded SYNCED (`0x64`/`0x43`) jako eksperyment "czy to wpłynie na config push do id≥3" — nie pomogło, więc wycofane.
 
 **Co przywraca AWARYJNY → NORMAL:**
 - Power-cycle slave + obecność prawdziwego Nano mastera + AERO (potwierdzono)
