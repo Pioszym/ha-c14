@@ -6,13 +6,26 @@ ESP32 jako master/bridge/slave na magistrali C14 (COMPIT/PRO-VENT) do rekuperato
 
 - **[PROTOCOL.md](PROTOCOL.md)** — pełna dokumentacja reverse engineering protokołu C14 (mapa ramek, kodowanie, checksum, timing)
 - **[HISTORY.md](HISTORY.md)** — historia debugowania, fałszywe tropy, lekcje (ESP8266 phantom 0xFF, kolizja slotu, bufor, checksum K)
+- **[esp02.yaml](esp02.yaml)** — user-level template (substitutions, esphome name, esp32 board, api/ota, uart piny). To kopiujesz/edytujesz dla swojego urządzenia.
+- **[packages/c14_core.yaml](packages/c14_core.yaml)** — silnik C14: globals, scripts, cykl Mastera, parser ramek 30B, encje HA (switch/select/number/sensor). Bez ruszania, traktować jak bibliotekę.
 
 ## Hardware
 
-- ESP32-WROOM-32
-- 2x RS485 HW-0519 (3.3V, auto-direction)
-- UART2 GPIO16/17 = strona AERO
-- UART1 GPIO4/18 = strona NANO (Nano Color CTP)
+- ESP32-WROOM-32 (lub kompatybilny)
+- 1x RS485 HW-0519 (3.3V, auto-direction), wpięty równolegle do A1/B1 magistrali Nano↔AERO
+- Domyślnie RX/TX = GPIO16/17 (zmienisz w `esp02.yaml` jeśli inne piny)
+
+## Instalacja
+
+1. Wgraj zawartość repo do `/config/esphome/` (lub klonuj). Powinieneś mieć `esp02.yaml` + `packages/c14_core.yaml`.
+2. Edytuj `esp02.yaml`:
+   - `substitutions:` — `device_name`, `friendly_name`
+   - `uart:` — sprawdź piny `rx_pin`/`tx_pin`. **NIE zmieniaj `id: uart_bus`** — `c14_core.yaml` używa tego ID.
+   - usuń `esp32_ble_tracker`/`bluetooth_proxy` jeśli nie potrzebujesz
+   - `packages:` — `wifi`/`device_base` zastąp własnymi pakietami (lub usuń i wpisz `wifi:` bezpośrednio)
+3. `secrets.yaml`: klucz API ESPHome, hasło OTA, hasło Wi-Fi
+4. `esphome compile esp02.yaml && esphome upload esp02.yaml`
+5. Po podłączeniu do HA encje pojawią się jako `switch.<device>_master_on`, `select.<device>_termostat` itd.
 
 ## Status
 

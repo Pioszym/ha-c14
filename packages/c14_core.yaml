@@ -1,0 +1,1956 @@
+################################################################################
+# C14 CORE — implementacja protokolu AERO 3B V2 (Prodmax 300) / Nano Color CTP
+#
+# To jest "silnik". Tutaj sa wszystkie globals, scripts, intervals, encje HA
+# (switch/select/number/sensor/binary_sensor/text_sensor) realizujace cykl
+# Mastera, parser ramek 30B, wirtualne slave'y, ekstrakcje pomiarow z AERO.
+#
+# User wlacza ten pakiet z poziomu swojego pliku top-level (np. esp02.yaml):
+#
+#   packages:
+#     c14_core: !include packages/c14_core.yaml
+#
+# Wymagania od user-pliku (kontrakt):
+#   - uart: z `id: uart_bus` (9600 8N1, RX-buffer >=512). Piny dowolne.
+#   - esphome: name + friendly_name; reszta esphome (on_boot) jest tu.
+#   - api: i ota: (klucze user-side).
+#   - czas (`time:`) zalecany dla logow.
+#
+# UART musi byc wpiety rownolegle do A1/B1 magistrali Nano <-> AERO. ESP czyta
+# caly ruch (Nano broadcasts + AERO E4(63)) i opcjonalnie nadaje wlasne ramki.
+#
+# Repo: https://github.com/Pioszym/ha-c14
+# Licencja: MIT (firmware) / CC-BY-SA (dokumentacja protokolu w PROTOCOL.md)
+################################################################################
+
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - delay: 5s   # poczekaj na pelny init (UART, WiFi, sensory, restore globals)
+      - if:
+          condition:
+            lambda: 'return id(g_master_on);'
+          then:
+            - script.execute: master_cycle
+            - logger.log: "=== Master cycle started after boot (g_master_on restored ON) ==="
+
+globals:
+  # Single-bus parser state (jeden RX, jeden buffer)
+  - id: g_buf
+    type: uint8_t[32]
+  - id: g_pos
+    type: uint8_t
+    initial_value: "0"
+  - id: g_last_byte_ms
+    type: uint32_t
+    initial_value: "0"     # millis() ostatniego RX bajtu (do timeout resync fragmentu)
+  - id: g_master_on
+    type: bool
+    restore_value: true
+    initial_value: "true"    # default ON, sterowane z switch.master_on (VS niezależne)
+  - id: g_first_cycle_post_boot
+    type: bool
+    initial_value: "true"    # reset na każdym power-on (bez restore_value).
+                             # Pierwszy cykl post-boot pomija #1 E4(29) (jak Nano-master post-boot
+                             # startuje od E3#44 — wymaga T_pok read/zegar sync przed wysłaniem E4).
+                             # Wyjątek: gdy g_config_push_pending=true, #1 idzie jako config push
+                             # (slave boot wykryty w poprzednim cyklu nadrzędny względem boot-skip).
+  - id: g_config_push_pending
+    type: bool
+    initial_value: "false"   # flaga: wykryto 80(2A), w nast. cyklu #1 wyslij E4(29) src=0x2A
+  - id: g_detected_slave_id
+    type: uint8_t
+    initial_value: "0"       # id slave (z f[3] w 80(2A), np. 0x2A = id=2)
+  - id: g_slave_ack
+    type: bool
+    initial_value: "false"   # master flag: widzialem slave E4(2x) reactive → ustaw f[26]=0x50 w E5(29)
+  # Virtual slaves (2026-04-24): niezalezne switche id=2..5
+  # Kazdy wlaczony slucha swojego wake-up (0xA8+id, 0x44, 0x29) i odpowiada E4(0x28+id)
+  - id: g_vs_2
+    type: bool
+    restore_value: true
+    initial_value: "false"   # Virtual Slave id=2 aktywny (f[3]=0x2A, wake-up AA,44,08,29)
+  - id: g_vs_3
+    type: bool
+    restore_value: true
+    initial_value: "false"   # Virtual Slave id=3 aktywny (f[3]=0x2B, wake-up AB,44,09,29)
+  - id: g_vs_4
+    type: bool
+    restore_value: true
+    initial_value: "false"   # Virtual Slave id=4 aktywny (f[3]=0x2C, wake-up AC,44,0A,29)
+  - id: g_vs_5
+    type: bool
+    restore_value: true
+    initial_value: "false"   # Virtual Slave id=5 aktywny (f[3]=0x2D, wake-up AD,44,0B,29)
+  - id: g_vs_pending_id
+    type: uint8_t
+    initial_value: "0"       # id virtual slave ktory ma odpowiedziec (0 = brak)
+  - id: g_gear_poza
+    type: uint8_t
+    restore_value: true
+    initial_value: "0x01"   # Stop (analogicznie do nastawy strefy Poza w Nano EEPROM)
+  - id: g_gear_cmd
+    type: uint8_t
+    restore_value: true
+    initial_value: "0x03"   # Manual B1 (0x01=Stop, 0x03=B1, 0x05=B2, 0x07=B3; +0x08=chlodz overlay dodawany dynamicznie)
+  - id: g_bypass_cmd
+    type: uint8_t
+    restore_value: true
+    initial_value: "0x61"   # AUTO (0x60=OFF, 0x61=AUTO, 0x62=ON)
+  - id: g_season
+    type: uint8_t
+    restore_value: true
+    initial_value: "0"      # 0=Zima, 1=Lato bez, 2=Chlodzenie
+  - id: g_wietrz_on
+    type: bool
+    restore_value: true
+    initial_value: "false"
+  - id: g_thermostat
+    type: uint8_t
+    restore_value: true
+    initial_value: "2"      # ESP-UI rozszerzenie: 0=Eco, 1=Urlop, 2=Manual, 3=Comfort, 4=Poza domem
+                            # 0/3/4 → f[27] bity 0-1 = 0x00 (Harm w protokole; Nano EEPROM-slot decyduje Comfort/Eco/Poza)
+                            # 1 → f[27]=0x01 (Urlop), 2 → f[27]=0x02 (Manual)
+                            # ESP nie ma harmonogramu — user wybiera slot ręcznie przez ten select
+  - id: g_program
+    type: uint8_t
+    restore_value: true
+    initial_value: "0"      # Programy: 0=Normal, 1=Poza domem (f[5] bit 0x04), 2=Urlop (f[28]=0x00 validity=0)
+  - id: g_rot_e4
+    type: uint8_t
+    initial_value: "0"      # rotator E4(29) src=21 f[25-26]: 0=00,00 init, 1=01,14, 2=02,01, 3=03,03 (potem 1→2→3→1)
+  - id: g_bus_year
+    type: uint8_t
+    initial_value: "0"      # rok mod 100 z f[26] gdy f[25]=01
+  - id: g_bus_month
+    type: uint8_t
+    initial_value: "0"      # miesiąc z f[26] gdy f[25]=02
+  - id: g_bus_day
+    type: uint8_t
+    initial_value: "0"      # dzień miesiąca z f[26] gdy f[25]=03
+  # Cache surowych pól E4(29) src=0x21 mastera (f[3]=0x29) — uzywane przez VS (slave) zeby echo'wac 1:1 z masterem
+  # Bez tego rotator daty f[25-26] w VS jest stalym snapshotem ("zaciety slave") — Nano master nie rejestruje takiego slave
+  - id: g_m_valid
+    type: bool
+    initial_value: "false"
+  - id: g_m_dow
+    type: uint8_t
+    initial_value: "0"
+  - id: g_m_hh
+    type: uint8_t
+    initial_value: "0"
+  - id: g_m_mm
+    type: uint8_t
+    initial_value: "0"
+  - id: g_m_sp_h
+    type: uint8_t
+    initial_value: "0x11"
+  - id: g_m_sp_l
+    type: uint8_t
+    initial_value: "0x18"
+  - id: g_m_f25
+    type: uint8_t
+    initial_value: "0"
+  - id: g_m_f26
+    type: uint8_t
+    initial_value: "0"
+  - id: g_m_f27
+    type: uint8_t
+    initial_value: "0"
+  - id: g_m_f28
+    type: uint8_t
+    initial_value: "0"
+  - id: g_master_full
+    type: bool
+    restore_value: true
+    initial_value: "false"   # false=Mini (10 ramek), true=Full (27 ramek)
+  # Setpointy temperatur (5 trybow, wartosci w stopniach C)
+  - id: g_sp_comfort
+    type: float
+    restore_value: true
+    initial_value: "23.0"
+  - id: g_sp_eco
+    type: float
+    restore_value: true
+    initial_value: "21.0"
+  - id: g_sp_chlodz
+    type: float
+    restore_value: true
+    initial_value: "23.0"
+  - id: g_sp_reczna
+    type: float
+    restore_value: true
+    initial_value: "22.0"
+  - id: g_sp_poza
+    type: float
+    restore_value: true
+    initial_value: "20.0"
+  - id: g_cycle_count
+    type: uint32_t
+    initial_value: "0"
+  - id: g_frame_no
+    type: uint8_t
+    initial_value: "0"   # numer ramki w cyklu master (1..27 w Master Full); reset na E4(29) src=21 f[3]=29
+  - id: g_aero_resp_cycle
+    type: uint16_t
+    initial_value: "0"
+  - id: g_cnt_nano
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_tx_ms
+    type: uint32_t
+    initial_value: "0"
+  - id: g_last_aero_rx_ms
+    type: uint32_t
+    initial_value: "0"       # timestamp ostatniej AERO E4(63) - do dynamicznej flagi f[5]=AERO_OK
+  - id: g_last_tx_name
+    type: std::string
+    initial_value: '"none"'
+  # Cache temperatur AERO (ostatnie znane, dla broadcastu gdy AERO milczy)
+  - id: g_cache_czerp
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_nawiew
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_wyrzut
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_wywiew
+    type: float
+    initial_value: "0.0"
+  - id: g_cache_valid
+    type: bool
+    initial_value: "false"
+  - id: g_cache_age_ms
+    type: uint32_t
+    initial_value: "0"
+  # Setpointy % nawiew/wywiew per bieg (1/2/3/wietrzenie)
+  # TODO: wstrzyknac do odpowiednich pol w E4(29)/E5(29) gdy zidentyfikujemy ktore
+  # Fabryczne wartosci z E3(29)_44 obserwowane
+  - id: g_naw_b1
+    type: uint8_t
+    restore_value: true
+    initial_value: "37"   # 0x25
+  - id: g_wyw_b1
+    type: uint8_t
+    restore_value: true
+    initial_value: "32"   # 0x20
+  - id: g_naw_b2
+    type: uint8_t
+    restore_value: true
+    initial_value: "45"   # 0x2D
+  - id: g_wyw_b2
+    type: uint8_t
+    restore_value: true
+    initial_value: "40"   # 0x28
+  - id: g_naw_b3
+    type: uint8_t
+    restore_value: true
+    initial_value: "75"   # 0x4B
+  - id: g_wyw_b3
+    type: uint8_t
+    restore_value: true
+    initial_value: "70"   # 0x46
+  - id: g_naw_wiet
+    type: uint8_t
+    restore_value: true
+    initial_value: "100"  # 0x64
+  - id: g_wyw_wiet
+    type: uint8_t
+    restore_value: true
+    initial_value: "95"   # 0x5F
+
+script:
+  # Master TX: nadaje na single-bus (uart_bus). Bus jest fizycznie wspolny dla
+  # AERO i Nano, wiec jeden write trafia do obu odbiorcow.
+  - id: tx_frame
+    mode: single
+    parameters:
+      name: string
+      bytes: std::vector<uint8_t>
+    then:
+      - lambda: |-
+          // Empty bytes = boot-skip lub inny intentional skip — nie wysyłaj na UART
+          // (write_array z null pointer crashuje UART driver: "buffer null" → "uart marked as failed").
+          if (bytes.empty()) {
+            return;
+          }
+          id(g_last_tx_ms) = millis();
+          id(g_last_tx_name) = name;
+          id(uart_bus).write_array(bytes.data(), bytes.size());
+          {
+            char h[120]; int p = 0;
+            for (size_t i = 0; i < bytes.size() && p < 110; i++)
+              p += snprintf(h+p, 120-p, "%s%02X", i?",":"", bytes[i]);
+            ESP_LOGW("c14", ">>> #%s [%s]", name.c_str(), h);
+          }
+
+  # Cykl Mini=10 / Full=29 ramek z 800ms slotem po kazdej
+  # Petla: ostatnia akcja wywoluje siebie (mode: queued max_runs: 2 => kolejny czeka az obecny skonczy).
+  # Eliminuje sztywny interval i timing race (cykl Full > 22.5s, dawniej "mode: single is already running" warning).
+  - id: master_cycle
+    mode: queued
+    max_runs: 2
+    then:
+      - lambda: |-
+          id(g_aero_resp_cycle) = 0;
+          // 2026-05-11: g_cycle_count inkrement gdy ESP jest masterem (TX cyklu).
+          // Bus reader RX inkrementuje tylko gdy widzi obcego mastera (np. Nano-master);
+          // wlasne TX nie wraca przez RS-485, wiec bez tego sensor c14_cycles=0 w trybie Master.
+          id(g_cycle_count)++;
+
+      # 1. E4(29) — komenda biegu + sezon + wietrzenie (PIERWSZA jak u Nano)
+      # LUB jednorazowo E4(29) src=0x2A config push gdy wykryto 80(2A) od slave (g_config_push_pending)
+      # BOOT-SKIP: pierwsza ramka po power-on pomijana (jak Nano-master startuje od E3#44).
+      # Config push ma priorytet — jeśli pending, lecimy mimo boot-skip.
+      - script.execute:
+          id: tx_frame
+          name: "1"
+          bytes: !lambda |-
+            // BOOT-SKIP: pierwsza ramka post-boot pomijana (Nano-master startuje od E3#44).
+            // Config push override: jeśli slave boot wykryty → wysyłamy config push mimo boot-skip.
+            if (id(g_first_cycle_post_boot) && !id(g_config_push_pending)) {
+              id(g_first_cycle_post_boot) = false;
+              ESP_LOGW("c14", "[BOOT] Pierwsza E4(29) pominieta (jak Nano post-boot)");
+              return std::vector<uint8_t>{};  // pusta ramka → tx_frame nie wysyła
+            }
+            id(g_first_cycle_post_boot) = false;
+            // Jesli flaga pending → wyslij config push E4(29) src=0x2A
+            if (id(g_config_push_pending)) {
+              std::vector<uint8_t> f = {
+                0xE4, id(g_detected_slave_id), 0x00, 0x29,
+                0x0D,0x01,0x05,0x28,0x1C,0x2A,0x00,0x1E,
+                0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,
+                0x20,0x28,0x46,0x25,0x2D,0x4B,0x20,0x01,
+                0x53,0x23 };
+              // f[27]/f[28] dynamiczne z biezacych globals — slave po config push
+              // ma od razu aktualny sezon/bieg/termostat.
+              // f[27]: bity 0-2 termostat, bit 3 Lato bez (0x08), bit 4 Chłodz (0x10), bit 5 wietrz (0x20).
+              uint8_t v27;
+              switch (id(g_thermostat)) {
+                case 1:  v27 = 0x01; break;  // Urlop
+                case 2:  v27 = 0x02; break;  // Manual
+                default: v27 = 0x00; break;  // Eco/Comfort/Poza domem → Harm w protokole
+              }
+              if (id(g_season) == 1) v27 |= 0x08;
+              else if (id(g_season) == 2) v27 |= 0x10;
+              if (id(g_wietrz_on)) v27 |= 0x20;
+              f[27] = v27;
+              // f[28] config push (E4(29) src=0x2X) — to OSOBNA ramka od cyklu master E4 src=0x21.
+              // Sprawdzone empirycznie (HISTORY 2026-04-26 test1/test2): bit 0x40 wymagany dla slave
+              // żeby przeszedł w stan synced. Tu zachowujemy starą logikę:
+              //   bit 0x40 (sync flag) gdy Termostat=Manual
+              //   bit 0x08 (cooling demand) gdy Sezon=Chłodz AND T_pok>SP
+              uint8_t v28 = id(g_gear_cmd);
+              if (id(g_thermostat) == 2 /* Manual */) v28 |= 0x40;
+              float t_pok_cp = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+              float sp_cp = (id(g_thermostat) == 2) ? id(g_sp_reczna)
+                          : (id(g_season) == 0)    ? id(g_sp_eco)
+                          :                          id(g_sp_chlodz);
+              if (id(g_season) == 2 /* Chłodz */ && t_pok_cp > sp_cp) v28 |= 0x08;
+              f[28] = v28;
+              uint16_t s2 = f[0] + f[1];
+              for (int i = 3; i <= 28; i++) s2 += f[i];
+              f[2] = (s2 + 0xA3) & 0xFF;
+              id(g_config_push_pending) = false;
+              ESP_LOGW("c14", "*** CONFIG PUSH E4(29) src=0x%02X wyslany (f[27]=0x%02X, f[28]=0x%02X) ***",
+                       id(g_detected_slave_id), f[27], f[28]);
+              return f;
+            }
+            // Standard E4(29) src=0x21
+            std::vector<uint8_t> f = {
+              0xE4,0x21,0x00,0x29,0x0A,0x40,0x00,0x02,0x08,0x2E,0x7E,0x00,
+              0x11,0x0E,0x11,0x22,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+              0x14,0x64,0x02,0x04,0x00,0x03,0x23 };
+            // f[5] = bit 0x40 (AERO_OK heartbeat — Nano trzyma stale SET niezależnie od stanu RX,
+            //                  AERO sprawdza ten bit i milczy gdy CLEAR → poprzednia logika "120s window"
+            //                  wpadała w spiralę śmierci po pierwszej dłuższej przerwie AERO)
+            //        | bit 0x04 (tylko gdy Programy=Poza domem)
+            uint8_t f5_prog = (id(g_program) == 1) ? 0x04 : 0x00;  // 1=Poza domem
+            f[5] = 0x40 | f5_prog;
+            // f[25-26]: 3-fazowa transmisja DATY (rok/miesiąc/dzień) - odkryte 2026-04-26
+            // po boot 00,00, potem 01,YY → 02,MM → 03,DD → 01,YY... (cyklicznie)
+            auto t = id(ha_time).now();
+            uint8_t r = id(g_rot_e4);
+            uint8_t year_mod = t.is_valid() ? ((t.year - 2000) % 100) : 0;
+            uint8_t month = t.is_valid() ? t.month : 1;
+            uint8_t day = t.is_valid() ? t.day_of_month : 1;
+            if (r == 0)      { f[25]=0x00; f[26]=0x00;     id(g_rot_e4)=1; }
+            else if (r == 1) { f[25]=0x01; f[26]=year_mod; id(g_rot_e4)=2; }
+            else if (r == 2) { f[25]=0x02; f[26]=month;    id(g_rot_e4)=3; }
+            else             { f[25]=0x03; f[26]=day;      id(g_rot_e4)=1; }
+            // f[4] - Nano master ma stałe 0x0A (nie day_of_month!) - zgodne z protokolem
+            f[4] = 0x0A;
+            // f[7] day_of_week: ESPHome zwraca 1=Nd..7=Sob, Nano oczekuje 0=Pn..6=Nd
+            // Konwersja: dow_nano = (dow_esp + 5) % 7
+            if (t.is_valid()) {
+              f[7] = (t.day_of_week + 5) % 7;
+              f[8] = t.hour & 0xFF;
+              f[9] = t.minute & 0xFF;
+            }
+            auto enc = [&f](int idx, float tv) {
+              // Clamp do zakresu Nano (0-40°C) — chroni magistralę przed bajtami spoza spec.
+              if (tv < 0.0f)  tv = 0.0f;
+              if (tv > 40.0f) tv = 40.0f;
+              int16_t v = (int16_t)(tv * 10.0f) + 2000;
+              f[idx] = (v / 128) & 0xFF;
+              f[idx+1] = (v % 128) & 0xFF;
+            };
+            // f[14-15] aktywny setpoint wg cross-table (PROTOCOL §5.6, fix 2026-05-10):
+            //   Programy=Poza/Urlop  -> g_sp_poza (nadpisuje Termostat)
+            //   Term=Manual          -> g_sp_reczna
+            //   Term=Comfort         -> g_sp_comfort (ESP-UI: jawny wybór slotu Comfort)
+            //   Term=Poza domem      -> g_sp_poza   (ESP-UI: jawny wybór slotu Poza domem)
+            //   Term=Eco/Urlop + Zima        -> g_sp_eco
+            //   Term=Eco/Urlop + Lato/Chlodz -> g_sp_chlodz
+            float active_sp;
+            if (id(g_program) == 1 /* Poza domem */ || id(g_program) == 2 /* Urlop */) {
+              active_sp = id(g_sp_poza);
+            } else if (id(g_thermostat) == 2 /* Manual */) {
+              active_sp = id(g_sp_reczna);
+            } else if (id(g_thermostat) == 3 /* Comfort */) {
+              active_sp = id(g_sp_comfort);
+            } else if (id(g_thermostat) == 4 /* Poza domem */) {
+              active_sp = id(g_sp_poza);
+            } else if (id(g_season) == 0 /* Zima */) {
+              active_sp = id(g_sp_eco);
+            } else {
+              active_sp = id(g_sp_chlodz);
+            }
+            enc(14, active_sp);
+            // f[12-13] T_pok — realny pomiar z HA sensora (Aqara Zigbee, sensor.0x00158d0007ef8421_temperature)
+            // 2026-05-11: bralismy active_sp ale to mylilo AERO (pokoj == SP => brak cooling demand).
+            // Fallback 22.0°C gdy HA sensor niedostepny (boot, WiFi down).
+            float t_pok = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+            // Sanity: ograniczyc do 5-35°C (zakres realnej pokojowej, zabezpieczenie przed kosmos w razie awarii)
+            if (t_pok < 5.0f) t_pok = 5.0f;
+            if (t_pok > 35.0f) t_pok = 35.0f;
+            enc(12, t_pok);
+            // Cooling demand flag (PROTOCOL §3.2 + HISTORY 2026-05-16 empiria 308 ramek Nano):
+            //   SET wyłącznie gdy: Sezon=Chłodzenie AND T_pok > aktywny SP
+            //   W Zimie i Lato bez Nano-master NIGDY nie wystawia tego bitu (niezależnie od T_pok/SP).
+            //   Wpływ: f[28] |= 0x08 oraz f[24] = 0x00 (paruje 1:1).
+            //   Programy=Urlop wyłącza wentylację → demand też CLEAR (i tak f[28]=0x00).
+            bool cooling_demand = (id(g_season) == 2 /* Chłodz */)
+                                  && (t_pok > active_sp)
+                                  && (id(g_program) != 2 /* nie Urlop */);
+            // f[27] bity 0-1: 0x00=Harm, 0x01=Urlop, 0x02=Manual.
+            // ESP-UI 0/3/4 (Eco/Comfort/Poza domem) wszystkie → Harm w protokole; różnica tylko w f[14-15].
+            uint8_t v27;
+            switch (id(g_thermostat)) {
+              case 1:  v27 = 0x01; break;  // Urlop
+              case 2:  v27 = 0x02; break;  // Manual
+              default: v27 = 0x00; break;  // Eco/Comfort/Poza domem → Harm
+            }
+            if (id(g_season) == 1) v27 |= 0x08;
+            else if (id(g_season) == 2) v27 |= 0x10;
+            if (id(g_wietrz_on)) v27 |= 0x20;
+            f[27] = v27;
+            // f[28]: bieg + cooling demand (PROTOCOL §3.2 + HISTORY 2026-05-16):
+            //  Programy=Urlop      → 0x00 (validity=0, brak biegu)
+            //  Programy=Poza domem → g_gear_poza (+0x08 jeśli cooling_demand)
+            //  Programy=Normal     → g_gear_cmd  (+0x08 jeśli cooling_demand)
+            //
+            // BIT 0x40 NIGDY NIE WYSYŁANE (empirycznie obalone 2026-05-16: Nano-master
+            // w 308 ramkach nigdy nie wysyłał tego bitu, hipotezy o "trusted/stable
+            // master" były artefaktem błędnych testów ESP-mastera).
+            uint8_t v28;
+            if (id(g_program) == 2 /* Urlop */) {
+              v28 = 0x00;
+            } else if (id(g_program) == 1 /* Poza domem */) {
+              v28 = id(g_gear_poza);
+            } else {
+              v28 = id(g_gear_cmd);
+            }
+            if (cooling_demand) v28 |= 0x08;
+            f[28] = v28;
+            // f[24] sync flag (PROTOCOL §3.2 + HISTORY 2026-05-16):
+            //   0x00 = cooling demand active (paruje z f[28] bit 0x08)
+            //   0x32 = baseline (no demand)
+            //   0x64 NIGDY (empirycznie: Nano-master nie używa tej wartości w master mode).
+            f[24] = cooling_demand ? 0x00 : 0x32;
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + 0xA3) & 0xFF;
+            // Publikuj do sensorów BUS (gdy ESP=master, własne TX nie wraca przez RX, więc tu)
+            { uint8_t bieg = f[28] & 0x07;
+              // f[28] dolne 3 bity: 0x01=Stop, 0x03=B1, 0x05=B2, 0x07=B3; bit 0=validity
+              // Programy=Urlop: f[28]==0x00 (validity=0) → bieg=0 → "Stop"
+              const char* bnames[] = {"Stop","Stop","Stop","Bieg 1","Stop","Bieg 2","Stop","Bieg 3"};
+              bool is_urlop = (id(g_program) == 2);
+              bool is_poza  = ((f[5] & 0x04) != 0);
+              if (bieg <= 7) id(ts_bieg).publish_state(bnames[bieg]);
+              uint8_t tryb = f[27] & 0x03;
+              const char* tnames[] = {"Harmonogram","Urlop","Manual","?"};
+              id(s_termostat_bus).publish_state(tnames[tryb]);
+              uint8_t sezon_bits = f[27] & 0x18;
+              id(s_sezon_bus).publish_state(sezon_bits == 0x00 ? "Zima" : sezon_bits == 0x08 ? "Lato bez" : sezon_bits == 0x10 ? "Chlodzenie" : "?");
+              id(s_wietrzenie_bus).publish_state((f[27] & 0x20) != 0);
+              float sp = ((f[14] * 128) + (f[15] % 128) - 2000) / 10.0f;
+              if (sp > 5 && sp < 35) id(s_sp_active_bus).publish_state(sp);
+              // T pokojowa wysylana w f[12-13] (z HA Aqara sensora przez id(ha_t_pok))
+              float tpok = ((f[12] * 128) + (f[13] % 128) - 2000) / 10.0f;
+              if (tpok > 5 && tpok < 35) id(s_t_pok_bus).publish_state(tpok);
+              // Programy: Urlop > Poza domem > Normal
+              const char* prog = is_urlop ? "Urlop" : (is_poza ? "Poza domem" : "Normal");
+              id(s_program_bus).publish_state(prog);
+              // s_wentylacja_bus przeniesione do lambda RX AERO E4(63) f[26] - faktyczny bieg z AERO
+              // Zegar + dow z f[7-9]
+              char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", f[8], f[9]);
+              id(s_zegar_bus).publish_state(clk);
+              const char* dows[] = {"Pn","Wt","Sr","Cz","Pt","Sob","Nd","?"};
+              id(s_dow_bus).publish_state(dows[f[7] & 0x07]);
+              // Data z f[25-26] (3 fazy) - aktualizuj globalne i zlóż
+              if (f[25] == 0x01) id(g_bus_year) = f[26];
+              else if (f[25] == 0x02) id(g_bus_month) = f[26];
+              else if (f[25] == 0x03) id(g_bus_day) = f[26];
+              if (id(g_bus_year) > 0 && id(g_bus_month) > 0 && id(g_bus_day) > 0) {
+                char dt[16]; snprintf(dt, sizeof(dt), "%02d-%02d-20%02d", id(g_bus_day), id(g_bus_month), id(g_bus_year));
+                id(s_data_bus).publish_state(dt);
+              }
+            }
+            // Self-update cache dla VS slave: ESP master nie uslyszy wlasnego TX (half-duplex blokuje RX),
+            // wiec VS wzialby zaciety cache z czasow gdy mistrzem byl Nano. Tu zapisujemy lokalnie.
+            id(g_m_dow)   = f[7];
+            id(g_m_hh)    = f[8];
+            id(g_m_mm)    = f[9];
+            id(g_m_sp_h)  = f[14];
+            id(g_m_sp_l)  = f[15];
+            id(g_m_f25)   = f[25];
+            id(g_m_f26)   = f[26];
+            id(g_m_f27)   = f[27];
+            id(g_m_f28)   = f[28];
+            id(g_m_valid) = true;
+            return f;
+      - delay: 800ms
+
+      # 2. E3(29) src=44 — QUERY (trigger AERO) + nastawy % per bieg + znacznik biegu f[28]
+      # f[14-15]=Wiet wyw/naw, f[20-22]=B1/B2/B3 wyw, f[23-25]=B1/B2/B3 naw
+      # f[28] znacznik biegu: wzor f[28] = bieg + 0x10
+      - script.execute:
+          id: tx_frame
+          name: "2"
+          bytes: !lambda |-
+            std::vector<uint8_t> f = {
+              0xE3,0x44,0x00,0x29,0x32,0x00,0x05,0x0A,0x28,0x1C,0x2A,0x1E,
+              0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
+              0x2D,0x4B,0x20,0x01,0x13,0x23 };
+            f[14] = id(g_wyw_wiet);
+            f[15] = id(g_naw_wiet);
+            f[20] = id(g_wyw_b1);
+            f[21] = id(g_wyw_b2);
+            f[22] = id(g_wyw_b3);
+            f[23] = id(g_naw_b1);
+            f[24] = id(g_naw_b2);
+            f[25] = id(g_naw_b3);
+            // f[28] E3 master: bieg + znacznik typu 0x10 + cooling demand 0x08
+            // (PROTOCOL §3.3, synchronizacja z E4 master). Bit 0x40 NIGDY (empiria 2026-05-16).
+            //   Urlop      → 0 (validity=0)
+            //   Poza domem → g_gear_poza
+            //   Normal     → g_gear_cmd
+            //   demand: Sezon=Chłodz AND T_pok>aktywny_sp
+            uint8_t v28;
+            if (id(g_program) == 2) v28 = 0x00;
+            else if (id(g_program) == 1) v28 = id(g_gear_poza);
+            else v28 = id(g_gear_cmd);
+            {
+              float t_pok_e3 = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+              float sp_e3 = (id(g_program) == 1 || id(g_program) == 2) ? id(g_sp_poza)
+                          : (id(g_thermostat) == 2) ? id(g_sp_reczna)
+                          : (id(g_thermostat) == 3) ? id(g_sp_comfort)
+                          : (id(g_thermostat) == 4) ? id(g_sp_poza)
+                          : (id(g_season) == 0)     ? id(g_sp_eco)
+                          :                           id(g_sp_chlodz);
+              if (id(g_season) == 2 && t_pok_e3 > sp_e3 && id(g_program) != 2) v28 |= 0x08;
+            }
+            f[28] = v28 | 0x10;
+            // f[27] = sezon | bypass_cmd | wietrz (PROTOCOL §3.3, korekta 2026-05-10):
+            //   sezon szyld:  Zima=0x00, Lato bez=0x08, Chłodz=0x10
+            //   bypass cmd:   OFF=0x00, AUTO=0x01, ON=0x02 (z g_bypass_cmd 0x60/0x61/0x62)
+            //   wietrz overlay: +0x20 gdy ON
+            uint8_t v27 = 0x00;
+            if (id(g_season) == 1) v27 |= 0x08;
+            else if (id(g_season) == 2) v27 |= 0x10;
+            v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;   // 0x60→0, 0x61→1, 0x62→2
+            if (id(g_wietrz_on)) v27 |= 0x20;
+            f[27] = v27;
+            // Checksum E3(29) src=0x44: K warunkowy zależny od stanu Wietrzenia × Sezonu
+            // Empiria 2026-05-17 z 5 ramek Nano-master:
+            //   K=0x23 GDY Wietrz=ON AND Sezon ∈ {Lato bez, Chłodzenie}
+            //   K=0xA3 inaczej (Wietrz OFF dowolny sezon, Wietrz ON+Zima)
+            // ESP wysyłający stały K → AERO odrzuca cksum → milknie (efekt obserwowany 2026-05-17
+            // przy Wietrz OFF po naprawie ON).
+            bool K_special = id(g_wietrz_on) && (id(g_season) != 0 /* nie Zima */);
+            uint8_t K_e3 = K_special ? 0x23 : 0xA3;
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + K_e3) & 0xFF;
+            // Publikuj do sensorów BUS (% nastawy)
+            id(s_wyw_wiet_bus).publish_state(f[14]);
+            id(s_naw_wiet_bus).publish_state(f[15]);
+            id(s_wyw_b1_bus).publish_state(f[20]);
+            id(s_wyw_b2_bus).publish_state(f[21]);
+            id(s_wyw_b3_bus).publish_state(f[22]);
+            id(s_naw_b1_bus).publish_state(f[23]);
+            id(s_naw_b2_bus).publish_state(f[24]);
+            id(s_naw_b3_bus).publish_state(f[25]);
+            return f;
+      - delay: 800ms
+
+      # 3. E3(29) src=56 — iNEXT slot (pusty, rezerwacja miejsca)
+      - script.execute:
+          id: tx_frame
+          name: "3"
+          bytes: !lambda |-
+            return { 0xE3,0x56,0x05,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                     0x00,0x00,0x00,0x00,0x00,0x23 };
+      - delay: 800ms
+
+      # 4. E2(29) — status broadcast
+      - script.execute:
+          id: tx_frame
+          name: "4"
+          bytes: !lambda |-
+            return { 0xE2,0x44,0x1E,0x29,0x4D,0x00,0x00,0x00,0x03,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x00,0x00,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 5. E5(29) — setpointy + bypass + sezon
+      # f[6-7]=T.Czerpnia (z cache AERO), f[8-9]=Comfort, f[10-11]=Eco, f[12-13]=Chlodzenie,
+      # f[14-15]=Zadana reczna, f[16-17]=Poza domem, f[25]=bypass, f[27]=sezon (0/0x0A/0x14),
+      # f[28]=kod biegu dla UI (0=Stop, 1=B1, 2=B2, 3=B3)
+      - script.execute:
+          id: tx_frame
+          name: "5"
+          bytes: !lambda |-
+            std::vector<uint8_t> f = {
+              0xE5,0x21,0x00,0x29,0x00,0x00,0x10,0x4D,0x11,0x36,0x11,0x22,
+              0x11,0x36,0x11,0x2C,0x11,0x18,0x00,0x30,0x7E,0x00,0x7E,0x00,
+              0x00,0x61,0x00,0x00,0x00,0x23 };
+            // Kodowanie temperatury: val = temp*10 + 2000 -> H=val/128, L=val%128
+            // Clamp 0-40°C (zakres Nano) — chroni magistralę przed bajtami spoza spec.
+            auto enc = [&f](int idx, float t) {
+              if (t < 0.0f)  t = 0.0f;
+              if (t > 40.0f) t = 40.0f;
+              int16_t v = (int16_t)(t * 10.0f) + 2000;
+              f[idx] = (v / 128) & 0xFF;
+              f[idx+1] = (v % 128) & 0xFF;
+            };
+            if (id(g_cache_valid)) enc(6, id(g_cache_czerp));
+            enc(8, id(g_sp_comfort));
+            enc(10, id(g_sp_eco));
+            enc(12, id(g_sp_chlodz));
+            enc(14, id(g_sp_reczna));
+            enc(16, id(g_sp_poza));
+            f[25] = id(g_bypass_cmd);
+            // f[26] slave ACK flag: 0x50 gdy widzielismy slave reactive, 0x00 gdy nie ma slave
+            f[26] = id(g_slave_ack) ? 0x50 : 0x00;
+            // f[27] sezon: 0=Zima -> 0x00, 1=Lato bez -> 0x0A, 2=Chlodzenie -> 0x14
+            uint8_t s27 = 0x00;
+            if (id(g_season) == 1) s27 = 0x0A;
+            else if (id(g_season) == 2) s27 = 0x14;
+            f[27] = s27;
+            // f[28] kod biegu w E5: 0/1/2/3 sekwencyjnie (bez bitu validity)
+            uint8_t g = id(g_gear_cmd) & 0x07;
+            f[28] = (g == 0x01) ? 0x00 : (g == 0x03) ? 0x01 : (g == 0x05) ? 0x02 : (g == 0x07) ? 0x03 : 0x00;
+            uint16_t s = f[0] + f[1];
+            for (int i = 3; i <= 28; i++) s += f[i];
+            f[2] = (s + 0xA3) & 0xFF;
+            // Publikuj setpointy do sensorów BUS (z E5)
+            { auto T = [](uint8_t h, uint8_t l) -> float { return ((h * 128) + (l % 128) - 2000) / 10.0f; };
+              float comf = T(f[8], f[9]); if (comf > 5 && comf < 35) id(s_sp_comfort_bus).publish_state(comf);
+              float eco = T(f[10], f[11]); if (eco > 5 && eco < 35) id(s_sp_eco_bus).publish_state(eco);
+              float chl = T(f[12], f[13]); if (chl > 5 && chl < 35) id(s_sp_chlodz_bus).publish_state(chl);
+              float rec = T(f[14], f[15]); if (rec > 5 && rec < 35) id(s_sp_reczna_bus).publish_state(rec);
+              float poz = T(f[16], f[17]); if (poz > 5 && poz < 35) id(s_sp_poza_bus).publish_state(poz);
+              // Bypass tryb (f[25]): 0x60=OFF, 0x61=AUTO, 0x62=ON
+              const char* bp = (f[25] == 0x60) ? "OFF" : (f[25] == 0x61) ? "AUTO" : (f[25] == 0x62) ? "ON" : "?";
+              id(s_bypass_cmd_bus).publish_state(bp); }
+            return f;
+      - delay: 800ms
+
+      # 6. F0(29) — heartbeat broadcast
+      - script.execute:
+          id: tx_frame
+          name: "6"
+          bytes: !lambda |-
+            return { 0xF0,0x44,0x4E,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 7. 81(29) — Nano heartbeat
+      - script.execute:
+          id: tx_frame
+          name: "7"
+          bytes: !lambda |-
+            return { 0x81,0x44,0x5F,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 8. D0(29) — slave config
+      - script.execute:
+          id: tx_frame
+          name: "8"
+          bytes: !lambda |-
+            return { 0xD0,0x44,0x65,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 9. D1(29)
+      - script.execute:
+          id: tx_frame
+          name: "9"
+          bytes: !lambda |-
+            return { 0xD1,0x44,0x66,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # 10. D2(29)
+      - script.execute:
+          id: tx_frame
+          name: "10"
+          bytes: !lambda |-
+            return { 0xD2,0x44,0x67,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                     0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                     0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+      - delay: 800ms
+
+      # ========== MASTER FULL EXTENSION (27 ramek total, ~22s cykl) ==========
+      # Ramki 11-27 wysylane tylko gdy g_master_full=true.
+      # Zawartosc statyczna (0x7E/0x00 fill) — enumeration/keepalive dla slaves.
+      # Hipoteza: Nano slave moze potrzebowac tych ramek do time sync / enumeration.
+
+      # 11. D3(29) — slave config rozszerzony
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "11"
+                bytes: !lambda |-
+                  return { 0xD3,0x44,0x68,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                           0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 12. D4(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "12"
+                bytes: !lambda |-
+                  return { 0xD4,0x44,0x69,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                           0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 13. D5(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "13"
+                bytes: !lambda |-
+                  return { 0xD5,0x44,0x6A,0x29,0x53,0x4B,0x41,0x07,0x68,0x07,0x04,0x00,
+                           0x6E,0x00,0x5A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 14. E3(29) src=44 — DRUGI QUERY (identyczny jak #2, AERO odpowie ponownie)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "14"
+                bytes: !lambda |-
+                  std::vector<uint8_t> f = {
+                    0xE3,0x44,0x00,0x29,0x32,0x00,0x05,0x0A,0x28,0x1C,0x2A,0x1E,
+                    0x01,0x17,0x5F,0x64,0x18,0x14,0x00,0x24,0x20,0x28,0x46,0x25,
+                    0x2D,0x4B,0x20,0x01,0x13,0x23 };
+                  f[14] = id(g_wyw_wiet);
+                  f[15] = id(g_naw_wiet);
+                  f[20] = id(g_wyw_b1);
+                  f[21] = id(g_wyw_b2);
+                  f[22] = id(g_wyw_b3);
+                  f[23] = id(g_naw_b1);
+                  f[24] = id(g_naw_b2);
+                  f[25] = id(g_naw_b3);
+                  // f[28] E3 master #14 (Master Full second trigger):
+                  // bieg | 0x10 marker | 0x08 cooling demand (patrz #2 logika identyczna)
+                  uint8_t v28;
+                  if (id(g_program) == 2) v28 = 0x00;
+                  else if (id(g_program) == 1) v28 = id(g_gear_poza);
+                  else v28 = id(g_gear_cmd);
+                  {
+                    float t_pok_14 = id(ha_t_pok).has_state() ? id(ha_t_pok).state : 22.0f;
+                    float sp_14 = (id(g_program) == 1 || id(g_program) == 2) ? id(g_sp_poza)
+                                : (id(g_thermostat) == 2) ? id(g_sp_reczna)
+                                : (id(g_thermostat) == 3) ? id(g_sp_comfort)
+                                : (id(g_thermostat) == 4) ? id(g_sp_poza)
+                                : (id(g_season) == 0)     ? id(g_sp_eco)
+                                :                           id(g_sp_chlodz);
+                    if (id(g_season) == 2 && t_pok_14 > sp_14 && id(g_program) != 2) v28 |= 0x08;
+                  }
+                  // bit 0x40 NIGDY w ESP (empiria 2026-05-16 — Nano-master też nigdy nie wystawia)
+                  f[28] = v28 | 0x10;
+                  // f[27] = sezon | bypass_cmd | wietrz — patrz #2 (PROTOCOL §3.3, korekta 2026-05-10)
+                  uint8_t v27 = 0x00;
+                  if (id(g_season) == 1) v27 |= 0x08;
+                  else if (id(g_season) == 2) v27 |= 0x10;
+                  v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;
+                  if (id(g_wietrz_on)) v27 |= 0x20;
+                  f[27] = v27;
+                  // Checksum E3(29) src=0x44: K warunkowy (jak #2, patrz wyżej)
+                  bool K_special_14 = id(g_wietrz_on) && (id(g_season) != 0);
+                  uint8_t K_e3_14 = K_special_14 ? 0x23 : 0xA3;
+                  uint16_t s = f[0] + f[1];
+                  for (int i = 3; i <= 28; i++) s += f[i];
+                  f[2] = (s + K_e3_14) & 0xFF;
+                  return f;
+            - delay: 800ms
+
+      # 15. 8B(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "15"
+                bytes: !lambda |-
+                  return { 0x8B,0x44,0x69,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 16. 9F(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "16"
+                bytes: !lambda |-
+                  return { 0x9F,0x44,0x7D,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 17. 82(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "17"
+                bytes: !lambda |-
+                  return { 0x82,0x44,0x60,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 18. 8C(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "18"
+                bytes: !lambda |-
+                  return { 0x8C,0x44,0x6A,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 19. 8D(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "19"
+                bytes: !lambda |-
+                  return { 0x8D,0x44,0x6B,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 20. 8E(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "20"
+                bytes: !lambda |-
+                  return { 0x8E,0x44,0x6C,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 21. 95(29)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "21"
+                bytes: !lambda |-
+                  return { 0x95,0x44,0x73,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            - delay: 800ms
+
+      # 22. AA(29) src=44
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "22"
+                bytes: !lambda |-
+                  return { 0xAA,0x44,0x08,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            # Self-loopback: ESP polduplex nie uslyszy wlasnego TX, wiec wywolujemy vs_respond bezposrednio
+            - lambda: |-
+                if (id(g_vs_2)) {
+                  id(g_vs_pending_id) = 2;
+                  id(vs_respond).execute();
+                }
+            - delay: 800ms
+
+      # 23. AA(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "23"
+                bytes: !lambda |-
+                  return { 0xAA,0x56,0x4C,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
+      # 24. AB(29) src=44
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "24"
+                bytes: !lambda |-
+                  return { 0xAB,0x44,0x09,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            # Self-loopback dla VS-3
+            - lambda: |-
+                if (id(g_vs_3)) {
+                  id(g_vs_pending_id) = 3;
+                  id(vs_respond).execute();
+                }
+            - delay: 800ms
+
+      # 25. AB(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "25"
+                bytes: !lambda |-
+                  return { 0xAB,0x56,0x4D,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
+      # 26. AC(29) src=44
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "26"
+                bytes: !lambda |-
+                  return { 0xAC,0x44,0x0A,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            # Self-loopback dla VS-4
+            - lambda: |-
+                if (id(g_vs_4)) {
+                  id(g_vs_pending_id) = 4;
+                  id(vs_respond).execute();
+                }
+            - delay: 800ms
+
+      # 27. AC(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "27"
+                bytes: !lambda |-
+                  return { 0xAC,0x56,0x4E,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
+      # 28. AD(29) src=44 — wake-up id=5 (slot 800ms jak AA/AB/AC, na potrzeby testu Nano slave id=5)
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "28"
+                bytes: !lambda |-
+                  return { 0xAD,0x44,0x0B,0x29,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+                           0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+            # Self-loopback dla VS-5
+            - lambda: |-
+                if (id(g_vs_5)) {
+                  id(g_vs_pending_id) = 5;
+                  id(vs_respond).execute();
+                }
+            - delay: 800ms
+
+      # 29. AD(29) src=56
+      - if:
+          condition:
+            lambda: 'return id(g_master_full);'
+          then:
+            - script.execute:
+                id: tx_frame
+                name: "29"
+                bytes: !lambda |-
+                  return { 0xAD,0x56,0x4F,0x29,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+                           0x00,0x00,0x00,0x00,0x00,0x23 };
+            - delay: 800ms
+
+      # 30. Petla cyklu — jesli g_master_on dalej true, kolejny cykl od razu (przez kolejke mode:queued)
+      - if:
+          condition:
+            lambda: 'return id(g_master_on);'
+          then:
+            - script.execute: master_cycle
+
+  # Virtual slave response (2026-04-24): uniwersalny dla id=2..5, czyta g_vs_pending_id
+  # 2026-05-17: zmiana SYNCED → UNSYNCED (f[24]=0x32, f[28] bez 0x40) — wg empirii Nano-slave
+  # w obecności ESP-master zawsze jest UNSYNCED (sesja 2026-05-17 obserwacja Nano slave id=2:
+  # f[24]=0x32, f[28]=0x03). Synced state wymaga prawdziwego Nano-mastera z factory pairing.
+  # Wcześniejszy eksperyment 2026-04-26 (wymuszanie SYNCED w VS) nie pomógł — Nano-master
+  # nie wysłał config push do VS id≥3. Bardziej realistyczne udawanie real slave przez UNSYNCED.
+  - id: vs_respond
+    mode: single
+    then:
+      - delay: 280ms   # typowy delay Nano slave po wake-up (280-300ms zmierzono empirycznie)
+      - lambda: |-
+          uint8_t vs_id = id(g_vs_pending_id);
+          if (vs_id < 2 || vs_id > 5) return;
+          // Szablon UNSYNCED: f[24]=0x32, f[28]=0x03 (B1 bez sync flag) — jak real Nano slave w obecności ESP
+          std::vector<uint8_t> f = {
+            0xE4,0x21,0x00,0x2A,0x0A,0x40,0x00,0x02,0x00,0x00,0x7E,0x00,
+            0x11,0x23,0x11,0x18,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+            0x14,0x32,0x00,0x00,0x00,0x03,0x23 };
+          f[3] = 0x28 + vs_id;  // id=2->0x2A, id=5->0x2D
+          // Echo z ostatniego E4(29) src=0x21 mastera (f[3]=0x29) - jak prawdziwy Nano slave
+          if (id(g_m_valid)) {
+            f[7]  = id(g_m_dow);                       // dow z mastera
+            f[8]  = id(g_m_hh);                        // godz z mastera
+            f[9]  = id(g_m_mm);                        // min z mastera
+            f[14] = id(g_m_sp_h);                      // setpoint H z mastera
+            f[15] = id(g_m_sp_l);                      // setpoint L z mastera
+            f[25] = id(g_m_f25);                       // rotator faza (0x01/02/03) - KLUCZOWE
+            f[26] = id(g_m_f26);                       // rotator wartosc (rok/mies/dzien)
+            f[27] = id(g_m_f27);                       // tryb termostatu + sezon + wietrzenie
+            f[28] = id(g_m_f28) & 0x07;                // sam bieg z mastera (bez 0x40 sync flag - UNSYNCED jak real Nano)
+          } else {
+            // Fallback przed pierwszym widzianym E4 mastera - zegar z HA
+            auto t = id(ha_time).now();
+            if (t.is_valid()) {
+              f[8] = t.hour & 0xFF;
+              f[9] = t.minute & 0xFF;
+            }
+          }
+          // Checksum K=0xA3 (jak E4 od slave)
+          uint16_t s = f[0] + f[1];
+          for (int i = 3; i <= 28; i++) s += f[i];
+          f[2] = (s + 0xA3) & 0xFF;
+          // ESP TX na single-bus
+          id(uart_bus).write_array(f.data(), f.size());
+          {
+            char h[120]; int p = 0;
+            for (size_t i = 0; i < f.size() && p < 110; i++)
+              p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+            ESP_LOGI("c14", "SLAVE [%s]", h);
+          }
+
+  # Virtual slave 80 boot — wysyla jednorazowo po wlaczeniu switcha
+  - id: vs_boot_80
+    mode: queued   # mozna odpalac rownolegle dla roznych id
+    parameters:
+      vs_id: int
+    then:
+      - lambda: |-
+          if (vs_id < 2 || vs_id > 20) return;
+          // VS niezależne od master_on — user świadomie włącza switch VS gdy chce udać slave.
+          // Bezpieczeństwo: gdy master_on=true równolegle z VS, można dostać kolizję TX (warn).
+          if (id(g_master_on)) {
+            ESP_LOGW("c14", "[VS] 80 boot id=%d wysylany pomimo Master ON (mozliwa kolizja TX)", vs_id);
+          }
+          std::vector<uint8_t> f = {
+            0x80,0x44,0x5F,0x2A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+            0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
+            0x7E,0x7E,0x7E,0x7E,0x7E,0x23 };
+          f[3] = 0x28 + vs_id;
+          f[2] = (0x5F + vs_id - 2) & 0xFF;  // delta CRC liniowa
+          // ESP TX na single-bus
+          id(uart_bus).write_array(f.data(), f.size());
+          char h[120]; int p = 0;
+          for (size_t i = 0; i < f.size() && p < 110; i++)
+            p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+          ESP_LOGI("c14", "SLAVE [%s]", h);
+
+interval:
+  # Single-bus RX parser — czyta z uart_bus, dispatchuje per zrodlo ramki:
+  #   - AERO E4(63)  -> publikacja sensorow temperatur + ESP_LOGE (czerwone)
+  #   - reszta       -> bus sensors / VS / master detekcja + ESP_LOGI (zielone)
+  - interval: 100ms
+    then:
+      - lambda: |-
+          uint8_t b;
+          int reads = 0;
+          while (id(uart_bus).available() && reads++ < 256) {
+            if (!id(uart_bus).read_byte(&b)) break;
+            if (id(g_pos) < 32) {
+              id(g_buf)[id(g_pos)] = b;
+              id(g_pos)++;
+            }
+            if (b == 0x23 && id(g_pos) >= 30) {
+              uint8_t len = id(g_pos);
+              uint8_t *f = id(g_buf);
+              uint32_t dt = millis() - id(g_last_tx_ms);
+
+              auto T = [](uint8_t h, uint8_t l) -> float {
+                return ((h * 128) + (l % 128) - 2000) / 10.0f;
+              };
+
+              bool is_aero = (f[0] == 0xE4 && f[3] == 0x63);
+
+              if (is_aero) {
+                float cz = T(f[10], f[11]);
+                float nw = T(f[14], f[15]);
+                float wt = T(f[16], f[17]);
+                float wy = T(f[18], f[19]);
+                uint8_t naw_pct = f[24];
+                uint8_t wyw_pct = f[25];
+                uint8_t bieg = f[26];
+                bool bypass = (f[28] & 0x20) != 0;
+                // Cache do globals
+                id(g_cache_czerp) = cz;
+                id(g_cache_nawiew) = nw;
+                id(g_cache_wyrzut) = wt;
+                id(g_cache_wywiew) = wy;
+                id(g_cache_valid) = true;
+                id(g_cache_age_ms) = millis();
+                // Publikuj sensory
+                id(s_czerp).publish_state(cz);
+                id(s_nawiew).publish_state(nw);
+                id(s_wyrzut).publish_state(wt);
+                id(s_wywiew).publish_state(wy);
+                id(s_naw_pct).publish_state(naw_pct);
+                id(s_wyw_pct).publish_state(wyw_pct);
+                id(ts_bypass).publish_state(bypass ? "Otwarty" : "Zamkniety");
+                // f[27] flaga "AERO pracuje" (PROTOCOL §3.4): 0x00=Stop, 0x02=B1/B2/B3, 0x0A=Wietrzenie aktywne (0x08|0x02)
+                id(bs_fan).publish_state((f[27] & 0x02) != 0);
+                // Aero: Bieg (s_wentylacja_bus) - faktyczny stan AERO z f[26]
+                const char* wn[] = {"Stop","Bieg 1","Bieg 2","Bieg 3","Wietrzenie"};
+                if (bieg <= 4) id(s_wentylacja_bus).publish_state(wn[bieg]);
+                id(g_aero_resp_cycle)++;
+                id(g_last_aero_rx_ms) = millis();  // dla dynamicznej flagi f[5]=AERO_OK w E4(29)
+                {
+                  char h[120]; int p = 0;
+                  for (int i = 0; i < 30 && p < 110; i++)
+                    p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                  ESP_LOGE("c14", "AERO [%s]", h);
+                }
+              } else {
+                // PROTOCOL §3.1: f[1] to marker typu, NIE adres zrodlowy.
+                // Zrodlo rozpoznaj po f[3]: 0x29 = master id=1; 0x2A..0x3C = slave (subtyp = 0x28+id)
+                bool from_slave = (f[3] >= 0x2A && f[3] <= 0x3C);
+                // Numer ramki TYLKO dla mastera (f[3]=0x29) - jak w PROTOCOL §2 Master Mini/Full.
+                // Reset na E4(29) src=21 f[3]=29 (start cyklu); slave i AERO bez numeru.
+                if (!from_slave) {
+                  if (f[0] == 0xE4 && f[1] == 0x21 && f[3] == 0x29) {
+                    id(g_frame_no) = 1;
+                  } else {
+                    if (id(g_frame_no) < 99) id(g_frame_no)++;
+                  }
+                }
+                {
+                  char h[120]; int p = 0;
+                  for (int i = 0; i < len && p < 110; i++)
+                    p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
+                  if (from_slave) {
+                    ESP_LOGI("c14", "SLAVE [%s]", h);
+                  } else {
+                    ESP_LOGI("c14", "#%02d MASTER [%s]", id(g_frame_no), h);
+                  }
+                }
+                // Virtual slaves: per-id wake-up detection (0xA8+id, 0x44, 0x29) - gate per switch g_vs_N
+                if (f[1] == 0x44 && f[3] == 0x29 && f[0] >= 0xAA && f[0] <= 0xAD) {
+                  uint8_t vs_id = f[0] - 0xA8;  // AA->2, AB->3, AC->4, AD->5
+                  bool enabled = (vs_id == 2 && id(g_vs_2)) ||
+                                 (vs_id == 3 && id(g_vs_3)) ||
+                                 (vs_id == 4 && id(g_vs_4)) ||
+                                 (vs_id == 5 && id(g_vs_5));
+                  if (enabled) {
+                    id(g_vs_pending_id) = vs_id;
+                    id(vs_respond).execute();
+                  }
+                }
+                // Bus reader: E4(29) src=0x21 broadcast → publikuj do sensorów BUS (read-only, niezależnie od roli ESP)
+                if (f[0] == 0xE4 && f[1] == 0x21 && f[3] == 0x29) {
+                  // E4(29) src=0x21 to PIERWSZA ramka cyklu (master broadcast) - znacznik cykl start
+                  id(g_cycle_count)++;
+                  // Cache surowych pol mastera dla VS slave echo (rotator daty, dow, zegar, setpoint, tryb, bieg)
+                  id(g_m_dow)  = f[7];
+                  id(g_m_hh)   = f[8];
+                  id(g_m_mm)   = f[9];
+                  id(g_m_sp_h) = f[14];
+                  id(g_m_sp_l) = f[15];
+                  id(g_m_f25)  = f[25];
+                  id(g_m_f26)  = f[26];
+                  id(g_m_f27)  = f[27];
+                  id(g_m_f28)  = f[28];
+                  id(g_m_valid) = true;
+                  uint8_t bieg = f[28] & 0x07;
+                  const char* bnames[] = {"Stop","Stop","Stop","Bieg 1","Stop","Bieg 2","Stop","Bieg 3"};
+                  if (bieg <= 7) id(ts_bieg).publish_state(bnames[bieg]);
+                  uint8_t tryb = f[27] & 0x03;  // bity 0-1: tryb termostatu
+                  const char* tnames[] = {"Harmonogram","Urlop","Manual","?"};
+                  id(s_termostat_bus).publish_state(tnames[tryb]);
+                  uint8_t sezon_bits = f[27] & 0x18;  // bity 3-4: sezon
+                  id(s_sezon_bus).publish_state(sezon_bits == 0x00 ? "Zima" : sezon_bits == 0x08 ? "Lato bez" : sezon_bits == 0x10 ? "Chlodzenie" : "?");
+                  bool wiet = (f[27] & 0x20) != 0;
+                  id(s_wietrzenie_bus).publish_state(wiet);
+                  // Aktywny setpoint
+                  float sp = ((f[14] * 128) + (f[15] % 128) - 2000) / 10.0f;
+                  if (sp > 5 && sp < 35) id(s_sp_active_bus).publish_state(sp);
+                  // Programy (PROTOCOL §5.5):
+                  //   Urlop      → f[28]=0x00 (validity=0, bieg=0)
+                  //   Poza domem → f[5] bit 0x04 SET (g_program=1)
+                  //   Normal     → standard (g_program=0, brak bit 0x04, validity=1)
+                  bool poza_active = (f[5] & 0x04) != 0;
+                  bool urlop_active = (f[28] == 0x00);  // validity=0 = Programy=Urlop
+                  const char* prog = urlop_active ? "Urlop" : (poza_active ? "Poza domem" : "Normal");
+                  id(s_program_bus).publish_state(prog);
+                  // s_wentylacja_bus przeniesione do lambda RX AERO E4(63) - faktyczny bieg z AERO
+                  // Zegar + dow z f[7-9]
+                  char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", f[8], f[9]);
+                  id(s_zegar_bus).publish_state(clk);
+                  const char* dows[] = {"Pn","Wt","Sr","Cz","Pt","Sob","Nd","?"};
+                  id(s_dow_bus).publish_state(dows[f[7] & 0x07]);
+                  // Data z f[25-26] (3 fazy)
+                  if (f[25] == 0x01) id(g_bus_year) = f[26];
+                  else if (f[25] == 0x02) id(g_bus_month) = f[26];
+                  else if (f[25] == 0x03) id(g_bus_day) = f[26];
+                  if (id(g_bus_year) > 0 && id(g_bus_month) > 0 && id(g_bus_day) > 0) {
+                    char dts[16]; snprintf(dts, sizeof(dts), "%02d-%02d-20%02d", id(g_bus_day), id(g_bus_month), id(g_bus_year));
+                    id(s_data_bus).publish_state(dts);
+                  }
+                }
+                // Bus reader: E3(29) src=0x44 → nastawy % per bieg (do sensorów BUS)
+                if (f[0] == 0xE3 && f[1] == 0x44 && f[3] == 0x29) {
+                  if (f[14] <= 100) id(s_wyw_wiet_bus).publish_state(f[14]);
+                  if (f[15] <= 100) id(s_naw_wiet_bus).publish_state(f[15]);
+                  if (f[20] <= 100) id(s_wyw_b1_bus).publish_state(f[20]);
+                  if (f[21] <= 100) id(s_wyw_b2_bus).publish_state(f[21]);
+                  if (f[22] <= 100) id(s_wyw_b3_bus).publish_state(f[22]);
+                  if (f[23] <= 100) id(s_naw_b1_bus).publish_state(f[23]);
+                  if (f[24] <= 100) id(s_naw_b2_bus).publish_state(f[24]);
+                  if (f[25] <= 100) id(s_naw_b3_bus).publish_state(f[25]);
+                }
+                // Bus reader: E5(29) src=0x21 → setpointy temp + bypass cmd (do sensorów BUS)
+                if (f[0] == 0xE5 && f[1] == 0x21 && f[3] == 0x29) {
+                  float comf = T(f[8], f[9]);
+                  float eco = T(f[10], f[11]);
+                  float chl = T(f[12], f[13]);
+                  float rec = T(f[14], f[15]);
+                  float poz = T(f[16], f[17]);
+                  if (comf > 5 && comf < 35) id(s_sp_comfort_bus).publish_state(comf);
+                  if (eco > 5 && eco < 35) id(s_sp_eco_bus).publish_state(eco);
+                  if (chl > 5 && chl < 35) id(s_sp_chlodz_bus).publish_state(chl);
+                  if (rec > 5 && rec < 35) id(s_sp_reczna_bus).publish_state(rec);
+                  if (poz > 5 && poz < 35) id(s_sp_poza_bus).publish_state(poz);
+                  // Bypass tryb (f[25]): 0x60=OFF, 0x61=AUTO, 0x62=ON
+                  const char* bp = (f[25] == 0x60) ? "OFF" : (f[25] == 0x61) ? "AUTO" : (f[25] == 0x62) ? "ON" : "?";
+                  id(s_bypass_cmd_bus).publish_state(bp);
+                }
+                // Master reactive: 80(29) src=0x44 f[3]=0x2X (slave boot announcement) → zaplanuj config push E4(29) src=0x2X na nast. pozycji #1
+                if (f[0] == 0x80 && f[1] == 0x44 && id(g_master_on)) {
+                  id(g_config_push_pending) = true;
+                  id(g_detected_slave_id) = f[3];  // np. 0x2A dla id=2
+                  ESP_LOGW("c14", "*** Slave boot detected (f[3]=0x%02X) → config push zaplanowany na nast. cykl #1", f[3]);
+                }
+                // Master detekcja: slave reactive E4(29) src=0x21 f[3]=0x2X → ustaw g_slave_ack (→ f[26]=0x50 w E5(29))
+                if (f[0] == 0xE4 && f[1] == 0x21 && f[3] >= 0x2A && f[3] <= 0x3C && id(g_master_on)) {
+                  if (!id(g_slave_ack)) {
+                    id(g_slave_ack) = true;
+                    ESP_LOGW("c14", "*** Slave reactive detected (f[3]=0x%02X) → f[26]=0x50 w E5 od teraz", f[3]);
+                  }
+                }
+                id(g_cnt_nano)++;
+              }
+              id(g_pos) = 0;
+            }
+            if (id(g_pos) >= 32) id(g_pos) = 0;
+            id(g_last_byte_ms) = millis();
+          }
+          // Timeout resync: fragment + 100ms cisza = stracilismy pozostale bajty, reset
+          // Zwiekszone z 50ms na 100ms zeby zlapac ramki z dluzszymi pauzami miedzy bajtami (HW-0519 enable/disable)
+          // Hex dump bufora dla diagnostyki - mozna zobaczyc CO AERO nadaje (jesli nadaje skrocone ramki)
+          if (id(g_pos) > 0 && id(g_pos) < 30 && (millis() - id(g_last_byte_ms)) > 100) {
+            char h[120]; int p = 0;
+            for (uint8_t i = 0; i < id(g_pos) && p < 110; i++)
+              p += snprintf(h+p, 120-p, "%s%02X", i?",":"", id(g_buf)[i]);
+            ESP_LOGW("c14", "[BUS] FRAGMENT pos=%u quiet=%lums drop [%s]",
+                     id(g_pos), (unsigned long)(millis() - id(g_last_byte_ms)), h);
+            id(g_pos) = 0;
+          }
+
+switch:
+  - platform: template
+    name: "Master ON"
+    id: sw_master_on
+    icon: mdi:server-network
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    lambda: 'return id(g_master_on);'
+    turn_on_action:
+      - lambda: |-
+          id(g_master_on) = true;
+          id(g_slave_ack) = false;          // reset ACK — będzie SET po wykryciu slave reactive
+          id(g_first_cycle_post_boot) = true;  // boot-skip pierwszej E4#1 (jak post-boot ESP)
+          id(g_rot_e4) = 0;                 // rotator boot init f[25-26]=00,00 dla pierwszej E4#1
+          ESP_LOGW("c14","=== MASTER ON (cykl Master Mini/Full wg switcha Master FULL) ===");
+      - script.execute: master_cycle
+    turn_off_action:
+      - lambda: |-
+          id(g_master_on) = false;
+          id(g_slave_ack) = false;
+          ESP_LOGW("c14","=== MASTER OFF (ESP pasywny, VS dziala jesli wlaczone osobno) ===");
+
+  - platform: template
+    name: "Master FULL"
+    id: sw_master_full
+    icon: mdi:format-list-numbered
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_master_full) = true;
+          ESP_LOGW("c14","=== MASTER FULL ON (27 ramek, ~22s cykl) ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_master_full) = false;
+          ESP_LOGW("c14","=== MASTER FULL OFF (10 ramek Mini, ~8s cykl) ===");
+
+  - platform: template
+    name: "Wietrzenie"
+    id: sw_wietrz
+    icon: mdi:weather-windy
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_wietrz_on) = true;
+          ESP_LOGW("c14","=== Wietrzenie ON ===");
+    turn_off_action:
+      - lambda: |-
+          id(g_wietrz_on) = false;
+          ESP_LOGW("c14","=== Wietrzenie OFF ===");
+
+  # Virtual slaves (2026-04-24): 4 niezalezne switche udajace slave id=2..5
+  # Wlaczenie: wysyla 80 boot jednorazowo + nasluchuje swojego wake-up
+  - platform: template
+    name: "VS id=2"
+    id: sw_vs_2
+    icon: mdi:numeric-2-circle
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(g_vs_2) = true;
+          ESP_LOGW("c14","=== VS id=2 ON - wysylam 80(2A) boot ===");
+      - script.execute:
+          id: vs_boot_80
+          vs_id: 2
+    turn_off_action:
+      - lambda: |-
+          id(g_vs_2) = false;
+          ESP_LOGW("c14","=== VS id=2 OFF ===");
+  - platform: template
+    name: "VS id=3"
+    id: sw_vs_3
+    icon: mdi:numeric-3-circle
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: 'id(g_vs_3) = true; ESP_LOGW("c14","=== VS id=3 ON ===");'
+      - script.execute:
+          id: vs_boot_80
+          vs_id: 3
+    turn_off_action:
+      - lambda: 'id(g_vs_3) = false; ESP_LOGW("c14","=== VS id=3 OFF ===");'
+  - platform: template
+    name: "VS id=4"
+    id: sw_vs_4
+    icon: mdi:numeric-4-circle
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: 'id(g_vs_4) = true; ESP_LOGW("c14","=== VS id=4 ON ===");'
+      - script.execute:
+          id: vs_boot_80
+          vs_id: 4
+    turn_off_action:
+      - lambda: 'id(g_vs_4) = false; ESP_LOGW("c14","=== VS id=4 OFF ===");'
+  - platform: template
+    name: "VS id=5"
+    id: sw_vs_5
+    icon: mdi:numeric-5-circle
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: 'id(g_vs_5) = true; ESP_LOGW("c14","=== VS id=5 ON - sprawdz czy master doda AD wake-up ===");'
+      - script.execute:
+          id: vs_boot_80
+          vs_id: 5
+    turn_off_action:
+      - lambda: 'id(g_vs_5) = false; ESP_LOGW("c14","=== VS id=5 OFF ===");'
+
+select:
+  - platform: template
+    name: "Termostat"
+    id: sel_termostat
+    icon: mdi:thermostat
+    # 5 opcji: Comfort/Eco/Poza domem to rozbicie protokolowego "Harm" (f[27]=0x00) wg slotu harmonogramu Nano.
+    # ESP nie ma harmonogramu — user wybiera slot ręcznie, ESP kopiuje odpowiedni setpoint z E5 do E4 f[14-15].
+    options: ["Comfort", "Eco", "Manual", "Poza domem", "Urlop"]
+    initial_option: "Manual"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Eco")        id(g_thermostat) = 0;
+          else if (x == "Urlop")      id(g_thermostat) = 1;
+          else if (x == "Manual")     id(g_thermostat) = 2;
+          else if (x == "Comfort")    id(g_thermostat) = 3;
+          else if (x == "Poza domem") id(g_thermostat) = 4;
+          ESP_LOGW("c14","Termostat: %s (0x%02X)", x.c_str(), id(g_thermostat));
+
+  - platform: template
+    name: "Wentylacja"
+    id: sel_gear
+    icon: mdi:fan
+    # Harmonogram/Harm-Urlop usunięte: ESP nie ma harmonogramu wentylacji (sloty w EEPROM Nano).
+    # Dla "wyłącz na wyjazd" jest Programy=Urlop (f[28]=0x00, validity=0) — patrz select Program.
+    options: ["Bieg 3", "Bieg 2", "Bieg 1", "Stop"]
+    initial_option: "Bieg 1"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Stop")   id(g_gear_cmd) = 0x01;
+          else if (x == "Bieg 1") id(g_gear_cmd) = 0x03;
+          else if (x == "Bieg 2") id(g_gear_cmd) = 0x05;
+          else if (x == "Bieg 3") id(g_gear_cmd) = 0x07;
+
+  - platform: template
+    name: "Wentylacja Poza domem lub Urlop"
+    id: sel_gear_poza
+    icon: mdi:home-export-outline
+    options: ["Bieg 3", "Bieg 2", "Bieg 1", "Stop"]
+    initial_option: "Stop"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Stop")   id(g_gear_poza) = 0x01;
+          else if (x == "Bieg 1") id(g_gear_poza) = 0x03;
+          else if (x == "Bieg 2") id(g_gear_poza) = 0x05;
+          else if (x == "Bieg 3") id(g_gear_poza) = 0x07;
+          ESP_LOGW("c14","Wentylacja Poza/Urlop: %s (0x%02X)", x.c_str(), id(g_gear_poza));
+
+  - platform: template
+    name: "Bypass"
+    id: sel_bypass
+    icon: mdi:valve
+    options: ["OFF", "AUTO", "ON"]
+    initial_option: "AUTO"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "OFF")  id(g_bypass_cmd) = 0x60;
+          else if (x == "AUTO") id(g_bypass_cmd) = 0x61;
+          else if (x == "ON")   id(g_bypass_cmd) = 0x62;
+          ESP_LOGW("c14","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
+
+  - platform: template
+    name: "Program"
+    id: sel_program
+    icon: mdi:home-account
+    options: ["Normal", "Poza domem", "Urlop"]
+    initial_option: "Normal"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Normal")     id(g_program) = 0;
+          else if (x == "Poza domem") id(g_program) = 1;
+          else if (x == "Urlop")      id(g_program) = 2;
+          ESP_LOGW("c14","Program: %s (%d)", x.c_str(), id(g_program));
+
+  - platform: template
+    name: "Sezon"
+    id: sel_season
+    icon: mdi:weather-partly-snowy
+    options: ["Zima ogrzewanie", "Lato bez ogrz/chlodz", "Chlodzenie"]
+    initial_option: "Zima ogrzewanie"
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: |-
+          if      (x == "Zima ogrzewanie")       id(g_season) = 0;
+          else if (x == "Lato bez ogrz/chlodz")  id(g_season) = 1;
+          else if (x == "Chlodzenie")            id(g_season) = 2;
+          ESP_LOGW("c14","Sezon: %s (%d)", x.c_str(), id(g_season));
+
+number:
+  - platform: template
+    name: "% Nawiew Bieg 1"
+    id: n_naw_b1
+    icon: mdi:fan-chevron-up
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_b1) = (uint8_t)x;'
+  - platform: template
+    name: "% Wywiew Bieg 1"
+    id: n_wyw_b1
+    icon: mdi:fan-chevron-down
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_b1) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Nawiew Bieg 2"
+    id: n_naw_b2
+    icon: mdi:fan-chevron-up
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_b2) = (uint8_t)x;'
+  - platform: template
+    name: "% Wywiew Bieg 2"
+    id: n_wyw_b2
+    icon: mdi:fan-chevron-down
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_b2) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Nawiew Bieg 3"
+    id: n_naw_b3
+    icon: mdi:fan-chevron-up
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_b3) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Wywiew Bieg 3"
+    id: n_wyw_b3
+    icon: mdi:fan-chevron-down
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_b3) = (uint8_t)x;'
+
+  - platform: template
+    name: "% Nawiew Wietrzenie"
+    id: n_naw_wiet
+    icon: mdi:fan-chevron-up
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_naw_wiet) = (uint8_t)x;'
+      
+  - platform: template
+    name: "% Wywiew Wietrzenie"
+    id: n_wyw_wiet
+    icon: mdi:fan-chevron-down
+    min_value: 30   # Nano-min - poniższe wartości mogą wprowadzić AERO w silent mode (HISTORY 2026-04-28)
+    max_value: 100
+    step: 1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "%"
+    mode: slider
+    set_action:
+      - lambda: 'id(g_wyw_wiet) = (uint8_t)x;'
+
+  # Setpointy temperatur (E5(29) f[8-17])
+  - platform: template
+    name: "Temp Comfort"
+    id: n_sp_comfort
+    icon: mdi:thermometer-high
+    min_value: 0
+    max_value: 40
+    step: 0.5
+    initial_value: 23.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_comfort) = x;'
+  - platform: template
+    name: "Temp Eco zima"
+    id: n_sp_eco
+    icon: mdi:thermometer-low
+    min_value: 0
+    max_value: 40
+    step: 0.5
+    initial_value: 21.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_eco) = x;'
+  - platform: template
+    name: "Temp Eco chlodzenie"
+    id: n_sp_chlodz
+    icon: mdi:snowflake-thermometer
+    min_value: 0
+    max_value: 40
+    step: 0.5
+    initial_value: 23.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_chlodz) = x;'
+  - platform: template
+    name: "Temp Reczna"
+    id: n_sp_reczna
+    icon: mdi:thermometer-auto
+    min_value: 0
+    max_value: 40
+    step: 0.5
+    initial_value: 22.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_reczna) = x;'
+  - platform: template
+    name: "Temp Poza domem"
+    id: n_sp_poza
+    icon: mdi:home-export-outline
+    min_value: 0
+    max_value: 40
+    step: 0.5
+    initial_value: 20.0
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "°C"
+    mode: box
+    set_action:
+      - lambda: 'id(g_sp_poza) = x;'
+  # Slave ID usuniete 2026-04-24 - zastapione switchami VS id=2..5
+
+sensor:
+  # T pokojowa z HA (Aqara/Zigbee) — uzywana w E4(29) f[12-13] zeby AERO mogl ocenic
+  # cooling demand (T_pok > active SP). ESP nie ma wlasnego sensora. 2026-05-11.
+  # Platform homeassistant tylko pull-uje do ESP (nie tworzy entity w HA).
+  - platform: homeassistant
+    id: ha_t_pok
+    entity_id: sensor.0x00158d0007ef8421_temperature
+    filters:
+      - filter_out: nan
+
+  - platform: template
+    name: "Aero: T.Czerpnia"
+    id: s_czerp
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "Aero: T.Nawiew"
+    id: s_nawiew
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "Aero: T.Wyrzut"
+    id: s_wyrzut
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "Aero: T.Wywiew"
+    id: s_wywiew
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters: [{delta: 0.1}]
+  - platform: template
+    name: "Aero: Nawiew %"
+    id: s_naw_pct
+    unit_of_measurement: "%"
+    icon: mdi:fan-chevron-up
+    accuracy_decimals: 0
+    filters: [{delta: 1}]
+  - platform: template
+    name: "Aero: Wywiew %"
+    id: s_wyw_pct
+    unit_of_measurement: "%"
+    icon: mdi:fan-chevron-down
+    accuracy_decimals: 0
+    filters: [{delta: 1}]
+    
+  - platform: template
+    name: "C14 Cycles"
+    accuracy_decimals: 0
+    update_interval: 10s
+    entity_category: diagnostic
+    lambda: 'return id(g_cycle_count);'
+  # === Sensory BUS (read-only, aktualizowane z magistrali niezaleznie od roli ESP) ===
+  - platform: template
+    name: "Bus: T Comfort"
+    id: s_sp_comfort_bus
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: template
+    name: "Bus: T Eco zima"
+    id: s_sp_eco_bus
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: template
+    name: "Bus: T Eco chłodzenie"
+    id: s_sp_chlodz_bus
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: template
+    name: "Bus: T Manual"
+    id: s_sp_reczna_bus
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: template
+    name: "Bus: T Poza domem"
+    id: s_sp_poza_bus
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: template
+    name: "Bus: T Zadana"
+    id: s_sp_active_bus
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+  - platform: template
+    name: "Bus: T Pokojowa"
+    id: s_t_pok_bus
+    icon: mdi:home-thermometer
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 1
+    # publishowane w lambda E4(29) src=21 po skomponowaniu f[12-13]
+  - platform: template
+    name: "Bus: % Naw B1"
+    id: s_naw_b1_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Naw B2"
+    id: s_naw_b2_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Naw B3"
+    id: s_naw_b3_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Wyw B1"
+    id: s_wyw_b1_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Wyw B2"
+    id: s_wyw_b2_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Wyw B3"
+    id: s_wyw_b3_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Naw Wietrz"
+    id: s_naw_wiet_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Bus: % Wyw Wietrz"
+    id: s_wyw_wiet_bus
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+
+text_sensor:
+  - platform: template
+    name: "Bus: Bieg"
+    id: ts_bieg
+    icon: mdi:fan
+  - platform: template
+    name: "Aero: Bypass aktualny"
+    id: ts_bypass
+    icon: mdi:valve
+  # === Text sensory BUS (z E4 master broadcast) ===
+  - platform: template
+    name: "Bus: Termostat"
+    id: s_termostat_bus
+    icon: mdi:thermostat
+  - platform: template
+    name: "Bus: Sezon"
+    id: s_sezon_bus
+    icon: mdi:weather-partly-snowy
+  - platform: template
+    name: "Bus: Program"
+    id: s_program_bus
+    icon: mdi:home
+  - platform: template
+    name: "Aero: Bieg"
+    id: s_wentylacja_bus
+    icon: mdi:fan-auto
+    # publishowany z lambda RX AERO E4(63) f[26] (faktyczny bieg AERO): 0=Stop, 1=B1, 2=B2, 3=B3, 4=Wietrzenie
+  - platform: template
+    name: "Bus: Bypass tryb"
+    id: s_bypass_cmd_bus
+    icon: mdi:valve
+  - platform: template
+    name: "Bus: Zegar"
+    id: s_zegar_bus
+    icon: mdi:clock-outline
+  - platform: template
+    name: "Bus: Dzien tygodnia"
+    id: s_dow_bus
+    icon: mdi:calendar
+  - platform: template
+    name: "Bus: Data"
+    id: s_data_bus
+    icon: mdi:calendar
+
+binary_sensor:
+  - platform: template
+    name: "Aero: Wentylator"
+    id: bs_fan
+    device_class: running
+  - platform: template
+    name: "Bus: Wietrzenie"
+    id: s_wietrzenie_bus
+    icon: mdi:weather-windy

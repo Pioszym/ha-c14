@@ -3,9 +3,10 @@ logs_*.txt
 id_markers_*.txt
 night_logs/
 night_scan.sh
-packages/
+packages/*
 *.yaml
 !esp02.yaml
+!packages/c14_core.yaml
 *.swp
 .DS_Store
 CLAUDE.md
