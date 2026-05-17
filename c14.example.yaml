@@ -23,10 +23,14 @@ esphome:
   friendly_name: ${friendly_name}
 
 esp32:
+  # ZMIEN na swoj board. Lista nazw: https://registry.platformio.org/platforms/platformio/espressif32/boards
+  # Najczestsze: esp32dev (klasyczne WROOM-32), esp32-s3-devkitc-1, esp32-c3-devkitm-1.
   board: esp32dev
   framework:
     type: esp-idf
     advanced:
+      # POTRZEBNE — c14_core ciasno mieści się w IRAM (~62% z 172KB).
+      # Bez tego flagu domyślne 128KB IRAM nie wystarczy i kompilacja padnie z "section .iram0 will not fit".
       sram1_as_iram: true
 
 api:
