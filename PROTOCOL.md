@@ -911,7 +911,19 @@ Nano w trybie slave (id=2..20) to **niezależny lokalny termostat** z własnym h
 | Data (rok/mies/dzień) | f[25-26] mastera (3 fazy) | Wyświetlanie pełnej daty (rekonstrukcja po ~66s) |
 | Sezon (Zima/Lato/Chłodzenie) | f[27] bity 3-4 mastera | Wyświetlanie + interpretacja setpointu (eco_zima vs eco_chłodz). Slave echo'uje to w swoim E4(2X). |
 
-**Wietrzenie (f[27] bit 5) NIE jest odbierane przez slave** (korekta 2026-05-17). Empiria: master Wietrz=OFF (`f[27]=0x08`), Nano-slave wysyłał `f[27]=0x2A` z bitem 5 SET (Wietrz ON) niezależnie. Wietrzenie to lokalny stan slave'a — slave wyświetla swój własny Wietrz, NIE master'a. AERO ignoruje slave reply, więc to nie wpływa na fizyczną realizację.
+**Wietrzenie (f[27] bit 5) NIE jest odbierane przez slave** (korekta 2026-05-17, log_esp02_202605171352.log).
+
+Empiria pełen test 14:04-05 (master Wietrz ON → OFF, sezon Chłodz w obu):
+
+| @ | ESP master | ESP VS id=3 | Nano slave id=2 |
+|---|---|---|---|
+| 14:04:47 | `0x30` Wietrz ON | `0x30` echo | `0x32` Wietrz ON |
+| **14:04:53** | **`0x10` Wietrz OFF** | `0x30` (jeszcze) | `0x32` |
+| 14:05:10 | `0x10` | **`0x10` echo OFF ✓** | **`0x32` Wietrz ON wciąż!** |
+
+ESP VS poprawnie echo'uje (Wietrz OFF), Nano slave trzyma swój bit 5 = `0x20` (Wietrz ON) z **lokalnej EEPROM**. Wartość pochodzi z czasu gdy Nano był masterem (z Wietrz ON) — w trybie slave menu Wietrzenia jest ukryte, user nie może zmienić lokalnie. AERO ignoruje slave reply (`f[3]≠0x29`), więc nie wpływa na fizyczną realizację.
+
+**Sezon (bity 3-4) JEST echo'owany** — test 14:02 (master Lato bez → Chłodz): Nano slave `0x2A` → `0x32` (bit 3 znikł, bit 4 pojawił się synchronicznie z masterem).
 
 ### 6.3 Co slave wysyła do mastera (raportuje swój stan)
 
