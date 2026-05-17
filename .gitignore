@@ -5,8 +5,10 @@ night_logs/
 night_scan.sh
 packages/*
 *.yaml
-!esp02.yaml
+!c14.example.yaml
 !packages/c14_core.yaml
+HISTORY.md
+tests/
 *.swp
 .DS_Store
 CLAUDE.md

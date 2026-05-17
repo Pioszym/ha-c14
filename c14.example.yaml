@@ -1,0 +1,75 @@
+################################################################################
+# C14 — przykladowy template dla uzytkownikow
+#
+# Skopiuj ten plik jako `<nazwa_twojego_urzadzenia>.yaml` w `/config/esphome/`,
+# dostosuj substitutions + piny UART + secrets. `c14_core.yaml` sciaga sie sam
+# z GitHuba przy `esphome compile`.
+#
+# Wymagania:
+#   - ESP32 (testowane na esp32dev z framework esp-idf)
+#   - 1x RS485 HW-0519 wpiety rownolegle do A1/B1 magistrali Nano <-> AERO
+#   - secrets.yaml z wpisami: wifi_ssid, wifi_password, api_key, ota_password
+#
+# Repo + docs: https://github.com/Pioszym/ha-c14
+# Licencja firmware: MIT
+################################################################################
+
+substitutions:
+  device_name: c14
+  friendly_name: "C14 Master"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    advanced:
+      sram1_as_iram: true
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  ap:
+    ssid: ${device_name}
+    password: !secret wifi_password
+
+captive_portal:
+
+logger:
+  level: DEBUG
+
+time:
+  - platform: homeassistant
+    id: ha_time
+    timezone: Europe/Warsaw
+
+packages:
+  c14_core:
+    url: https://github.com/Pioszym/ha-c14
+    files: [packages/c14_core.yaml]
+    ref: v1.0       # zamrozony stable release. Zmien na `main` jesli chcesz bleeding-edge.
+    refresh: 1d     # co ile sprawdzac update repo
+
+# KONTRAKT z c14_core: uart MUSI miec `id: uart_bus`, 9600 8N1, rx_buffer >= 512.
+# Piny zmien wg swojego boarda (tu domyslnie GPIO16/17 dla esp32dev).
+uart:
+  - id: uart_bus
+    rx_pin: GPIO16
+    tx_pin: GPIO17
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    rx_buffer_size: 512
