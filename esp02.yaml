@@ -335,7 +335,7 @@ script:
             char h[120]; int p = 0;
             for (size_t i = 0; i < bytes.size() && p < 110; i++)
               p += snprintf(h+p, 120-p, "%s%02X", i?",":"", bytes[i]);
-            ESP_LOGW("c14m", ">>> #%s_%s", name.c_str(), h);
+            ESP_LOGW("c14", ">>> #%s [%s]", name.c_str(), h);
           }
 
   # Cykl Mini=10 / Full=29 ramek z 800ms slotem po kazdej
@@ -364,7 +364,7 @@ script:
             // Config push override: jeśli slave boot wykryty → wysyłamy config push mimo boot-skip.
             if (id(g_first_cycle_post_boot) && !id(g_config_push_pending)) {
               id(g_first_cycle_post_boot) = false;
-              ESP_LOGW("c14m", "[BOOT] Pierwsza E4(29) pominieta (jak Nano post-boot)");
+              ESP_LOGW("c14", "[BOOT] Pierwsza E4(29) pominieta (jak Nano post-boot)");
               return std::vector<uint8_t>{};  // pusta ramka → tx_frame nie wysyła
             }
             id(g_first_cycle_post_boot) = false;
@@ -406,7 +406,7 @@ script:
               for (int i = 3; i <= 28; i++) s2 += f[i];
               f[2] = (s2 + 0xA3) & 0xFF;
               id(g_config_push_pending) = false;
-              ESP_LOGW("c14m", "*** CONFIG PUSH E4(29) src=0x%02X wyslany (f[27]=0x%02X, f[28]=0x%02X) ***",
+              ESP_LOGW("c14", "*** CONFIG PUSH E4(29) src=0x%02X wyslany (f[27]=0x%02X, f[28]=0x%02X) ***",
                        id(g_detected_slave_id), f[27], f[28]);
               return f;
             }
@@ -1118,9 +1118,11 @@ script:
             - script.execute: master_cycle
 
   # Virtual slave response (2026-04-24): uniwersalny dla id=2..5, czyta g_vs_pending_id
-  # 2026-04-26: full echo z mastera (cache g_m_*) + wymuszamy stan SYNCED (f[24]=0x64, f[28] |= 0x40)
-  # Hipoteza: Nano master rejestruje tylko slave ktory echo'wuje rotator daty f[25-26] (3-fazowy);
-  # statyczne f[25-26] u VS sprawialy ze master widzial "zaciety slave" i nie wysylal config push do id>=3.
+  # 2026-05-17: zmiana SYNCED → UNSYNCED (f[24]=0x32, f[28] bez 0x40) — wg empirii Nano-slave
+  # w obecności ESP-master zawsze jest UNSYNCED (sesja 2026-05-17 obserwacja Nano slave id=2:
+  # f[24]=0x32, f[28]=0x03). Synced state wymaga prawdziwego Nano-mastera z factory pairing.
+  # Wcześniejszy eksperyment 2026-04-26 (wymuszanie SYNCED w VS) nie pomógł — Nano-master
+  # nie wysłał config push do VS id≥3. Bardziej realistyczne udawanie real slave przez UNSYNCED.
   - id: vs_respond
     mode: single
     then:
@@ -1128,11 +1130,11 @@ script:
       - lambda: |-
           uint8_t vs_id = id(g_vs_pending_id);
           if (vs_id < 2 || vs_id > 5) return;
-          // Szablon SYNCED: f[7]=0x02 (ale nadpisany dow z mastera), f[24]=0x64, f[28]=0x43 (B1+sync, nadpisany)
+          // Szablon UNSYNCED: f[24]=0x32, f[28]=0x03 (B1 bez sync flag) — jak real Nano slave w obecności ESP
           std::vector<uint8_t> f = {
             0xE4,0x21,0x00,0x2A,0x0A,0x40,0x00,0x02,0x00,0x00,0x7E,0x00,
             0x11,0x23,0x11,0x18,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
-            0x14,0x64,0x00,0x00,0x00,0x43,0x23 };
+            0x14,0x32,0x00,0x00,0x00,0x03,0x23 };
           f[3] = 0x28 + vs_id;  // id=2->0x2A, id=5->0x2D
           // Echo z ostatniego E4(29) src=0x21 mastera (f[3]=0x29) - jak prawdziwy Nano slave
           if (id(g_m_valid)) {
@@ -1144,7 +1146,7 @@ script:
             f[25] = id(g_m_f25);                       // rotator faza (0x01/02/03) - KLUCZOWE
             f[26] = id(g_m_f26);                       // rotator wartosc (rok/mies/dzien)
             f[27] = id(g_m_f27);                       // tryb termostatu + sezon + wietrzenie
-            f[28] = (id(g_m_f28) & 0x07) | 0x40;       // bieg z mastera + sync flag (synced state)
+            f[28] = id(g_m_f28) & 0x07;                // sam bieg z mastera (bez 0x40 sync flag - UNSYNCED jak real Nano)
           } else {
             // Fallback przed pierwszym widzianym E4 mastera - zegar z HA
             auto t = id(ha_time).now();
@@ -1163,7 +1165,7 @@ script:
             char h[120]; int p = 0;
             for (size_t i = 0; i < f.size() && p < 110; i++)
               p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-            ESP_LOGW("c14m", ">>> SLAVE E4(%02X) id=%d [%s]", f[3], vs_id, h);
+            ESP_LOGI("c14", "SLAVE [%s]", h);
           }
 
   # Virtual slave 80 boot — wysyla jednorazowo po wlaczeniu switcha
@@ -1177,7 +1179,7 @@ script:
           // VS niezależne od master_on — user świadomie włącza switch VS gdy chce udać slave.
           // Bezpieczeństwo: gdy master_on=true równolegle z VS, można dostać kolizję TX (warn).
           if (id(g_master_on)) {
-            ESP_LOGW("c14m", "[VS] 80 boot id=%d wysylany pomimo Master ON (mozliwa kolizja TX)", vs_id);
+            ESP_LOGW("c14", "[VS] 80 boot id=%d wysylany pomimo Master ON (mozliwa kolizja TX)", vs_id);
           }
           std::vector<uint8_t> f = {
             0x80,0x44,0x5F,0x2A,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,0x7E,
@@ -1190,7 +1192,7 @@ script:
           char h[120]; int p = 0;
           for (size_t i = 0; i < f.size() && p < 110; i++)
             p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-          ESP_LOGW("c14m", ">>> SLAVE 80(%02X) id=%d [%s]", f[3], vs_id, h);
+          ESP_LOGI("c14", "SLAVE [%s]", h);
 
 interval:
   # Single-bus RX parser — czyta z uart_bus, dispatchuje per zrodlo ramki:
@@ -1253,7 +1255,7 @@ interval:
                   char h[120]; int p = 0;
                   for (int i = 0; i < 30 && p < 110; i++)
                     p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
-                  ESP_LOGE("c14m", "<<< AERO  %02X(%02X) [%s]", f[0], f[3], h);
+                  ESP_LOGE("c14", "AERO [%s]", h);
                 }
               } else {
                 // PROTOCOL §3.1: f[1] to marker typu, NIE adres zrodlowy.
@@ -1273,9 +1275,9 @@ interval:
                   for (int i = 0; i < len && p < 110; i++)
                     p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
                   if (from_slave) {
-                    ESP_LOGI("c14m", "<<< SLAVE  %02X(%02X) [%s]", f[0], f[3], h);
+                    ESP_LOGI("c14", "SLAVE [%s]", h);
                   } else {
-                    ESP_LOGI("c14m", "#%02d MASTER %02X(%02X) [%s]", id(g_frame_no), f[0], f[3], h);
+                    ESP_LOGI("c14", "#%02d MASTER [%s]", id(g_frame_no), h);
                   }
                 }
                 // Virtual slaves: per-id wake-up detection (0xA8+id, 0x44, 0x29) - gate per switch g_vs_N
@@ -1372,13 +1374,13 @@ interval:
                 if (f[0] == 0x80 && f[1] == 0x44 && id(g_master_on)) {
                   id(g_config_push_pending) = true;
                   id(g_detected_slave_id) = f[3];  // np. 0x2A dla id=2
-                  ESP_LOGW("c14m", "*** Slave boot detected (f[3]=0x%02X) → config push zaplanowany na nast. cykl #1", f[3]);
+                  ESP_LOGW("c14", "*** Slave boot detected (f[3]=0x%02X) → config push zaplanowany na nast. cykl #1", f[3]);
                 }
                 // Master detekcja: slave reactive E4(29) src=0x21 f[3]=0x2X → ustaw g_slave_ack (→ f[26]=0x50 w E5(29))
                 if (f[0] == 0xE4 && f[1] == 0x21 && f[3] >= 0x2A && f[3] <= 0x3C && id(g_master_on)) {
                   if (!id(g_slave_ack)) {
                     id(g_slave_ack) = true;
-                    ESP_LOGW("c14m", "*** Slave reactive detected (f[3]=0x%02X) → f[26]=0x50 w E5 od teraz", f[3]);
+                    ESP_LOGW("c14", "*** Slave reactive detected (f[3]=0x%02X) → f[26]=0x50 w E5 od teraz", f[3]);
                   }
                 }
                 id(g_cnt_nano)++;
@@ -1395,7 +1397,7 @@ interval:
             char h[120]; int p = 0;
             for (uint8_t i = 0; i < id(g_pos) && p < 110; i++)
               p += snprintf(h+p, 120-p, "%s%02X", i?",":"", id(g_buf)[i]);
-            ESP_LOGW("c14m", "[BUS] FRAGMENT pos=%u quiet=%lums drop [%s]",
+            ESP_LOGW("c14", "[BUS] FRAGMENT pos=%u quiet=%lums drop [%s]",
                      id(g_pos), (unsigned long)(millis() - id(g_last_byte_ms)), h);
             id(g_pos) = 0;
           }
@@ -1412,14 +1414,14 @@ switch:
     turn_on_action:
       - lambda: |-
           id(g_vs_2) = true;
-          ESP_LOGW("c14m","=== VS id=2 ON - wysylam 80(2A) boot ===");
+          ESP_LOGW("c14","=== VS id=2 ON - wysylam 80(2A) boot ===");
       - script.execute:
           id: vs_boot_80
           vs_id: 2
     turn_off_action:
       - lambda: |-
           id(g_vs_2) = false;
-          ESP_LOGW("c14m","=== VS id=2 OFF ===");
+          ESP_LOGW("c14","=== VS id=2 OFF ===");
   - platform: template
     name: "VS id=3"
     id: sw_vs_3
@@ -1427,12 +1429,12 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     turn_on_action:
-      - lambda: 'id(g_vs_3) = true; ESP_LOGW("c14m","=== VS id=3 ON ===");'
+      - lambda: 'id(g_vs_3) = true; ESP_LOGW("c14","=== VS id=3 ON ===");'
       - script.execute:
           id: vs_boot_80
           vs_id: 3
     turn_off_action:
-      - lambda: 'id(g_vs_3) = false; ESP_LOGW("c14m","=== VS id=3 OFF ===");'
+      - lambda: 'id(g_vs_3) = false; ESP_LOGW("c14","=== VS id=3 OFF ===");'
   - platform: template
     name: "VS id=4"
     id: sw_vs_4
@@ -1440,12 +1442,12 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     turn_on_action:
-      - lambda: 'id(g_vs_4) = true; ESP_LOGW("c14m","=== VS id=4 ON ===");'
+      - lambda: 'id(g_vs_4) = true; ESP_LOGW("c14","=== VS id=4 ON ===");'
       - script.execute:
           id: vs_boot_80
           vs_id: 4
     turn_off_action:
-      - lambda: 'id(g_vs_4) = false; ESP_LOGW("c14m","=== VS id=4 OFF ===");'
+      - lambda: 'id(g_vs_4) = false; ESP_LOGW("c14","=== VS id=4 OFF ===");'
   - platform: template
     name: "VS id=5"
     id: sw_vs_5
@@ -1453,12 +1455,12 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_OFF
     turn_on_action:
-      - lambda: 'id(g_vs_5) = true; ESP_LOGW("c14m","=== VS id=5 ON - sprawdz czy master doda AD wake-up ===");'
+      - lambda: 'id(g_vs_5) = true; ESP_LOGW("c14","=== VS id=5 ON - sprawdz czy master doda AD wake-up ===");'
       - script.execute:
           id: vs_boot_80
           vs_id: 5
     turn_off_action:
-      - lambda: 'id(g_vs_5) = false; ESP_LOGW("c14m","=== VS id=5 OFF ===");'
+      - lambda: 'id(g_vs_5) = false; ESP_LOGW("c14","=== VS id=5 OFF ===");'
 
   - platform: template
     name: "Master ON"
@@ -1473,13 +1475,13 @@ switch:
           id(g_slave_ack) = false;          // reset ACK — będzie SET po wykryciu slave reactive
           id(g_first_cycle_post_boot) = true;  // boot-skip pierwszej E4#1 (jak post-boot ESP)
           id(g_rot_e4) = 0;                 // rotator boot init f[25-26]=00,00 dla pierwszej E4#1
-          ESP_LOGW("c14m","=== MASTER ON (cykl Master Mini/Full wg switcha Master FULL) ===");
+          ESP_LOGW("c14","=== MASTER ON (cykl Master Mini/Full wg switcha Master FULL) ===");
       - script.execute: master_cycle
     turn_off_action:
       - lambda: |-
           id(g_master_on) = false;
           id(g_slave_ack) = false;
-          ESP_LOGW("c14m","=== MASTER OFF (ESP pasywny, VS dziala jesli wlaczone osobno) ===");
+          ESP_LOGW("c14","=== MASTER OFF (ESP pasywny, VS dziala jesli wlaczone osobno) ===");
 
   - platform: template
     name: "Master FULL"
@@ -1490,11 +1492,11 @@ switch:
     turn_on_action:
       - lambda: |-
           id(g_master_full) = true;
-          ESP_LOGW("c14m","=== MASTER FULL ON (27 ramek, ~22s cykl) ===");
+          ESP_LOGW("c14","=== MASTER FULL ON (27 ramek, ~22s cykl) ===");
     turn_off_action:
       - lambda: |-
           id(g_master_full) = false;
-          ESP_LOGW("c14m","=== MASTER FULL OFF (10 ramek Mini, ~8s cykl) ===");
+          ESP_LOGW("c14","=== MASTER FULL OFF (10 ramek Mini, ~8s cykl) ===");
 
   - platform: template
     name: "Wietrzenie"
@@ -1505,11 +1507,11 @@ switch:
     turn_on_action:
       - lambda: |-
           id(g_wietrz_on) = true;
-          ESP_LOGW("c14m","=== Wietrzenie ON ===");
+          ESP_LOGW("c14","=== Wietrzenie ON ===");
     turn_off_action:
       - lambda: |-
           id(g_wietrz_on) = false;
-          ESP_LOGW("c14m","=== Wietrzenie OFF ===");
+          ESP_LOGW("c14","=== Wietrzenie OFF ===");
 
 select:
   - platform: template
@@ -1525,7 +1527,7 @@ select:
           if      (x == "OFF")  id(g_bypass_cmd) = 0x60;
           else if (x == "AUTO") id(g_bypass_cmd) = 0x61;
           else if (x == "ON")   id(g_bypass_cmd) = 0x62;
-          ESP_LOGW("c14m","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
+          ESP_LOGW("c14","Bypass: %s (0x%02X)", x.c_str(), id(g_bypass_cmd));
 
   - platform: template
     name: "Wentylacja"
@@ -1558,7 +1560,7 @@ select:
           else if (x == "Bieg 1") id(g_gear_poza) = 0x03;
           else if (x == "Bieg 2") id(g_gear_poza) = 0x05;
           else if (x == "Bieg 3") id(g_gear_poza) = 0x07;
-          ESP_LOGW("c14m","Wentylacja Poza/Urlop: %s (0x%02X)", x.c_str(), id(g_gear_poza));
+          ESP_LOGW("c14","Wentylacja Poza/Urlop: %s (0x%02X)", x.c_str(), id(g_gear_poza));
 
   - platform: template
     name: "Termostat"
@@ -1577,7 +1579,7 @@ select:
           else if (x == "Manual")     id(g_thermostat) = 2;
           else if (x == "Comfort")    id(g_thermostat) = 3;
           else if (x == "Poza domem") id(g_thermostat) = 4;
-          ESP_LOGW("c14m","Termostat: %s (0x%02X)", x.c_str(), id(g_thermostat));
+          ESP_LOGW("c14","Termostat: %s (0x%02X)", x.c_str(), id(g_thermostat));
 
   - platform: template
     name: "Program"
@@ -1592,7 +1594,7 @@ select:
           if      (x == "Normal")     id(g_program) = 0;
           else if (x == "Poza domem") id(g_program) = 1;
           else if (x == "Urlop")      id(g_program) = 2;
-          ESP_LOGW("c14m","Program: %s (%d)", x.c_str(), id(g_program));
+          ESP_LOGW("c14","Program: %s (%d)", x.c_str(), id(g_program));
 
   - platform: template
     name: "Sezon"
@@ -1607,7 +1609,7 @@ select:
           if      (x == "Zima ogrzewanie")       id(g_season) = 0;
           else if (x == "Lato bez ogrz/chlodz")  id(g_season) = 1;
           else if (x == "Chlodzenie")            id(g_season) = 2;
-          ESP_LOGW("c14m","Sezon: %s (%d)", x.c_str(), id(g_season));
+          ESP_LOGW("c14","Sezon: %s (%d)", x.c_str(), id(g_season));
 
 number:
   - platform: template
@@ -1902,7 +1904,7 @@ sensor:
     device_class: temperature
     accuracy_decimals: 1
   - platform: template
-    name: "Bus: T pokojowa"
+    name: "Bus: T Pokojowa"
     id: s_t_pok_bus
     icon: mdi:home-thermometer
     unit_of_measurement: "°C"
