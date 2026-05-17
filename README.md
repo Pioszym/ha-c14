@@ -27,8 +27,10 @@ ESP32 jako master/bridge/slave na magistrali C14 (COMPIT/PRO-VENT) do rekuperato
    api_key: "wygenerowany_klucz_esphome"
    ota_password: "haslo_ota"
    ```
-4. `esphome compile c14.yaml && esphome upload c14.yaml`
-   - Przy pierwszej kompilacji ESPHome sklonuje to repo do `.esphome/packages/<hash>/` i wczyta `c14_core.yaml`
+4. `esphome run c14.yaml` (compile + upload + log w jednym)
+   - Pierwsze uruchomienie: ESPHome sklonuje to repo do `.esphome/packages/<hash>/` i wczyta `c14_core.yaml`
+   - Kolejne uruchomienia: cache lokalny, refresh co `1d` (patrz `refresh:` w `packages:`)
+   - Jeśli używasz ESPHome przez HA addon, możesz też kliknąć **Install** w dashboardzie
 5. Po podłączeniu do HA encje pojawią się jako `switch.<device>_master_on`, `select.<device>_termostat`, `select.<device>_wentylacja` itd.
 
 ## Wersjonowanie
