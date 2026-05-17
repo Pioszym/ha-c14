@@ -661,22 +661,23 @@ E4,2X,[cks],29,[FW_const ×10],[E3_copy_f14-28],23
 
 Slave Nano (panel Color CTP, id=2..20) **nie jest pasywnym reflektorem mastera** — to niezależna jednostka z własnym lokalnym termostatem, harmonogramem (EEPROM) i sensorem CTP. Komunikacja z masterem jest **dwukierunkowa**:
 
-**Master → Slave** (slave echo'uje w E4(2X) src=0x21):
+**Master → Slave** (slave odbiera i wyświetla, NIE echo'uje w swoim E4(2X)):
 | Pole | Znaczenie |
 |------|-----------|
 | f[7] | day_of_week — slave wyświetla na ekranie |
 | f[8-9] | godz/min — RTC sync ("DATĘ I CZAS USTAWIA NANO NR 1") |
 | f[25-26] | rotator daty (3 fazy: rok/miesiąc/dzień) — slave dekoduje pełną datę po 3 cyklach |
-| f[27] bity 3-4 | **sezon** (Zima/Lato bez/Chłodzenie) — slave wyświetla i aktualizuje wg mastera |
-| f[27] bit 5 | wietrzenie — slave odbiera, ale na panelu slave'a nie wyświetla (zarządza tym master, dotyczy AERO) |
+| f[27] bity 3-4 | **sezon** (Zima/Lato bez/Chłodzenie) — slave wyświetla, ale w swoim E4(2X) wysyła echo |
 
-**Slave → Master** (slave wysyła własne wartości w E4(2X) src=0x21):
+**Slave → Master** (slave wysyła własne LOKALNE wartości w E4(2X) src=0x21):
 | Pole | Znaczenie |
 |------|-----------|
 | f[12-13] | **temperatura pokojowa** — pomiar z sensora CTP slave'a (jego własny lokalny pomiar) |
 | f[14-15] | **aktywny SP** — z lokalnego harmonogramu lub Manual setpoint slave'a (NIE echo z mastera) |
 | f[24] | level termostatu slave'a (`0x64`/`0x32`) |
 | **f[27] bity 0-1** | **tryb termostatu lokalny slave'a** (Manual/Harmonogram/Urlop) — niezależny od mastera |
+| **f[27] bit 5** | **wietrzenie lokalne slave'a** — empiria 2026-05-17: Nano-slave wysyła swój stan Wietrz (zapamiętany z gdy był masterem lub ustawiony lokalnie), NIE echo z bieżącego mastera. AERO ignoruje (akceptuje tylko master id=1). |
+| f[27] bity 3-4 | sezon — kopiowany z mastera (jedyne pole f[27] które slave echo'uje) |
 | f[28] | bieg + flagi — slave nie zarządza biegiem AERO, ale wysyła wartość (echo z EEPROM lub zapamiętana z sesji gdy był masterem) |
 
 **Mechanizm:** każdy slave to lokalny termostat z własnym harmonogramem dziennym w EEPROM. Slave odpytuje user'a (na panelu) o tryb (Manual/Harm/Urlop) i lokalnie decyduje o swoim aktywnym setpoincie. Wysyła to do mastera + własną temperaturę pokojową. Master agreguje informacje od wszystkich slave'ów (id=2..20) i decyduje o biegu AERO (centralnym).
@@ -908,7 +909,9 @@ Nano w trybie slave (id=2..20) to **niezależny lokalny termostat** z własnym h
 | Zegar (godz/min) | f[8-9] mastera | RTC sync, wyświetlanie czasu na panelu slave (komunikat UI: "DATĘ I CZAS USTAWIA NANO NR 1") |
 | Day of week | f[7] mastera | Wyświetlanie + selekcja slotu z lokalnego harmonogramu |
 | Data (rok/mies/dzień) | f[25-26] mastera (3 fazy) | Wyświetlanie pełnej daty (rekonstrukcja po ~66s) |
-| Sezon (Zima/Lato/Chłodzenie) | f[27] bity 3-4 mastera | Wyświetlanie + interpretacja setpointu (eco_zima vs eco_chłodz) |
+| Sezon (Zima/Lato/Chłodzenie) | f[27] bity 3-4 mastera | Wyświetlanie + interpretacja setpointu (eco_zima vs eco_chłodz). Slave echo'uje to w swoim E4(2X). |
+
+**Wietrzenie (f[27] bit 5) NIE jest odbierane przez slave** (korekta 2026-05-17). Empiria: master Wietrz=OFF (`f[27]=0x08`), Nano-slave wysyłał `f[27]=0x2A` z bitem 5 SET (Wietrz ON) niezależnie. Wietrzenie to lokalny stan slave'a — slave wyświetla swój własny Wietrz, NIE master'a. AERO ignoruje slave reply, więc to nie wpływa na fizyczną realizację.
 
 ### 6.3 Co slave wysyła do mastera (raportuje swój stan)
 
