@@ -24,7 +24,7 @@
 ################################################################################
 
 substitutions:
-  c14_core_version: "1.1"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
+  c14_core_version: "1.2"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
 
 esphome:
   on_boot:
@@ -1166,7 +1166,7 @@ script:
       - http_request.get:
           url: https://api.github.com/repos/Pioszym/ha-c14/releases/latest
           capture_response: true
-          headers:
+          request_headers:
             Accept: application/vnd.github+json
           on_response:
             then:
