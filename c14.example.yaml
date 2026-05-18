@@ -36,6 +36,10 @@ esp32:
 api:
   encryption:
     key: !secret api_key
+  # batch_delay 500ms zwalnia batchowanie stanow encji do HA. Pomaga przy duzej liczbie
+  # encji + WiFi + BT (jak w pelnym c14_core) zeby nie wyczerpac heap ESP32 na initial
+  # state-push gdy HA sie podlacza. Mozesz zmniejszyc gdy widzisz lag stanow w HA.
+  batch_delay: 500ms
 
 ota:
   - platform: esphome

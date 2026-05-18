@@ -33,11 +33,25 @@ ESP32 jako master/bridge/slave na magistrali C14 (COMPIT/PRO-VENT) do rekuperato
    - Jeśli używasz ESPHome przez HA addon, możesz też kliknąć **Install** w dashboardzie
 5. Po podłączeniu do HA encje pojawią się jako `switch.<device>_master_on`, `select.<device>_termostat`, `select.<device>_wentylacja` itd.
 
-## Wersjonowanie
+## Wersjonowanie i powiadomienia o aktualizacjach
 
-`c14.example.yaml` domyślnie używa `ref: v1.0` — zamrożony stable release. Tagi releasów są tutaj: https://github.com/Pioszym/ha-c14/tags
+`c14.example.yaml` domyślnie pinuje do konkretnego tagu (np. `ref: v1.3`). Lista wersji: https://github.com/Pioszym/ha-c14/releases
 
-Chcesz bleeding-edge? Zmień `ref: v1.0` → `ref: main` w swoim YAML. Pamiętaj że main bywa eksperymentalny.
+**Update notifications:**
+- Na GitHubie: kliknij **Watch** (góra repo) → **Custom** → zaznacz **Releases**. Dostajesz email + powiadomienie GitHub przy każdym nowym release.
+- W HA: opcjonalnie dodaj REST sensor który pulluje GitHub API i triggeruje notyfikację:
+  ```yaml
+  # configuration.yaml
+  sensor:
+    - platform: rest
+      name: C14 Core Latest
+      resource: https://api.github.com/repos/Pioszym/ha-c14/releases/latest
+      value_template: "{{ value_json.tag_name }}"
+      scan_interval: 21600   # 6h
+  ```
+  Potem automatyzacja na zmianę stanu tego sensora → notify mobile.
+
+Bleeding-edge? Zmień `ref: vX.Y` → `ref: main`. Pamiętaj że main bywa eksperymentalny.
 
 ## Status
 
