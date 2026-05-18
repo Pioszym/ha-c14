@@ -150,33 +150,14 @@ Ramki ułożone w kolejności występowania w cyklu Master Full. Sekcja 3.1 opis
 
 Formuła: `f[2] = (f[0] + f[1] + sum(f[3]..f[28]) + K) & 0xFF`
 
-K zależy od **typu ramki** (f[0]) — a dla `E3(29) src=0x44` **dodatkowo od stanu Wietrzenia × Sezonu**. Empirycznie zweryfikowane na 367 ramek E3 + ramki innych typów z sesji Nano-master 2026-05-16:
+K zależy wyłącznie od **typu ramki** (f[0] + ewentualnie f[1] dla rozróżnienia src):
 
 | K | Ramki |
 |---|-------|
-| **`0xA3`** | E4(29) src=0x21/0x2X/0x63, E5(29), E2(29), F0(29), E3(29) src=0x56 (iNEXT), AA/AB/AC(29) src=0x44 (wake-up). Plus E3(29) src=0x44 gdy Wietrz=OFF lub Wietrz=ON+Zima. |
-| **`0x23`** | 81(29), D0/D1/D2/D3/D4/D5(29), 8B/9F/82/8C/8D/8E/95(29) (Master Full heartbeats), AA/AB/AC(29) src=0x56 (iNEXT). Plus E3(29) src=0x44 gdy **Wietrz=ON AND Sezon ∈ {Lato bez, Chłodzenie}**. |
+| **`0xA3`** | E4(29) src=0x21/0x2X/0x63, E5(29), E2(29), F0(29), E3(29) src=0x56 (iNEXT), AA/AB/AC(29) src=0x44 (wake-up) |
+| **`0x23`** | **E3(29) src=0x44 (trigger AERO)**, 81(29), D0/D1/D2/D3/D4/D5(29), 8B/9F/82/8C/8D/8E/95(29) (Master Full heartbeats), AA/AB/AC(29) src=0x56 (iNEXT) |
 
-**Reguła E3(29) src=0x44 (trigger AERO) — K warunkowy:**
-
-```
-K_E3 = (Wietrz_ON AND Sezon != Zima) ? 0x23 : 0xA3
-```
-
-Sprawdzone na 12 unikalnych kombinacjach f[27],f[28] z 367 ramek (sesja 2026-05-16):
-
-| f[27] | Sezon | Wietrz | Bypass cmd | K |
-|-------|-------|--------|------------|---|
-| `0x01`/`0x09`/`0x11` | dowolny | **OFF** | AUTO | `0xA3` |
-| `0x20`/`0x21`/`0x22` | **Zima** | ON | OFF/AUTO/ON | `0xA3` |
-| `0x29` | **Lato bez** | ON | AUTO | **`0x23`** |
-| `0x30`/`0x31` | **Chłodzenie** | ON | OFF/AUTO | **`0x23`** |
-
-Bity bypass cmd (0-1) **nie wpływają** na K. Sezon i Wietrz są niezależne — tylko AND obu (i sezon ≠ Zima) wymusza `K=0x23`.
-
-> **Hipoteza interpretacji:** to prawdopodobnie "feature flag" producenta — AERO sprawdza specyficzny stan operacyjny (free-cooling z Wietrzeniem) jako triggerujący alternatywny algorytm checksum. Nano-master replikuje tę logikę. Master implementacja MUSI ją również naśladować — inaczej AERO odrzuca trigger.
-
-> **Korekta 2026-05-17:** wcześniejszy PROTOCOL stwierdzał "K=0xA3 dla wszystkich src=44/21/63" — błędne uproszczenie. Co najmniej E3(29) src=0x44, 81(29), D0-D5(29) używają innego K. ESP-master wysyłający stały K=0xA3 → AERO odrzucał trigger jako uszkodzony → milczał. Pełna historia odkrycia w HISTORY 2026-05-17.
+K jest stałe per typ ramki. Bajt f[2] w samej ramce zmienia się w zależności od payloadu (suma f[3]..f[28]) — np. dla E3 src=0x44 gdy Wietrz przełącza ON/OFF, f[27] dostaje overlay 0x20, więc suma rośnie o 0x20 i f[2] rośnie o 0x20, ale K nadal 0x23.
 
 #### f[3] — subtyp / master ID
 
@@ -303,7 +284,7 @@ E3,44,[cks],29,32,00,05,0A,28,1C,2A,1E,01,17,[WIET_WYW],[WIET_NAW],18,14,00,[B1_
 |------|---------|-----------|--------|
 | f[0] | `0xE3` | ID ramki | KNOWN |
 | f[1] | `0x44` | marker (query/broadcast) | KNOWN |
-| f[2] | zmienne | checksum (K=0xA3) | KNOWN |
+| f[2] | zmienne | checksum (K=0x23) | KNOWN |
 | f[3] | `0x29` | subtyp | KNOWN |
 | f[4-13] | `32,00,05,0A,28,1C,2A,1E,01,17` | stałe header (znaczenie nieznane) | UNKNOWN |
 | f[14] | 0-100 | **Wietrzenie wywiew %** (np. `0x5F`=95) | KNOWN |

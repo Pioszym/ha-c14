@@ -24,7 +24,7 @@
 ################################################################################
 
 substitutions:
-  c14_core_version: "1.3"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
+  c14_core_version: "1.2"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
 
 esphome:
   on_boot:
