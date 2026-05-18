@@ -24,7 +24,7 @@
 ################################################################################
 
 substitutions:
-  c14_core_version: "1.1"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
+  c14_core_version: "1.2"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
 
 esphome:
   on_boot:
@@ -592,14 +592,13 @@ script:
             v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;   // 0x60→0, 0x61→1, 0x62→2
             if (id(g_wietrz_on)) v27 |= 0x20;
             f[27] = v27;
-            // Checksum E3(29) src=0x44: K warunkowy zależny od stanu Wietrzenia × Sezonu
-            // Empiria 2026-05-17 z 5 ramek Nano-master:
-            //   K=0x23 GDY Wietrz=ON AND Sezon ∈ {Lato bez, Chłodzenie}
-            //   K=0xA3 inaczej (Wietrz OFF dowolny sezon, Wietrz ON+Zima)
-            // ESP wysyłający stały K → AERO odrzuca cksum → milknie (efekt obserwowany 2026-05-17
-            // przy Wietrz OFF po naprawie ON).
-            bool K_special = id(g_wietrz_on) && (id(g_season) != 0 /* nie Zima */);
-            uint8_t K_e3 = K_special ? 0x23 : 0xA3;
+            // Checksum E3(29) src=0x44: K warunkowy zależny od Sezonu (NIE od Wietrzenia).
+            // Empiria 2026-05-18: AERO milczał przy Wietrz OFF + Lato bez (K=0xA3 wysyłane).
+            // Po wlaczeniu Wietrz (K=0x23) AERO zaczyna odpowiadać. Czyli K zalezy tylko od sezonu:
+            //   K=0x23 dla Sezon ∈ {Lato bez, Chłodzenie}  (g_season != 0)
+            //   K=0xA3 dla Sezon = Zima                    (g_season == 0)
+            // Stara hipoteza (Wietrz × Sezon, 2026-05-17) okazala sie zbyt restrykcyjna.
+            uint8_t K_e3 = (id(g_season) == 0) ? 0xA3 : 0x23;
             uint16_t s = f[0] + f[1];
             for (int i = 3; i <= 28; i++) s += f[i];
             f[2] = (s + K_e3) & 0xFF;
@@ -832,9 +831,8 @@ script:
                   v27 |= (id(g_bypass_cmd) - 0x60) & 0x03;
                   if (id(g_wietrz_on)) v27 |= 0x20;
                   f[27] = v27;
-                  // Checksum E3(29) src=0x44: K warunkowy (jak #2, patrz wyżej)
-                  bool K_special_14 = id(g_wietrz_on) && (id(g_season) != 0);
-                  uint8_t K_e3_14 = K_special_14 ? 0x23 : 0xA3;
+                  // Checksum E3(29) src=0x44: K warunkowy zalezny tylko od sezonu (jak #2 powyzej)
+                  uint8_t K_e3_14 = (id(g_season) == 0) ? 0xA3 : 0x23;
                   uint16_t s = f[0] + f[1];
                   for (int i = 3; i <= 28; i++) s += f[i];
                   f[2] = (s + K_e3_14) & 0xFF;
