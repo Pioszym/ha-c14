@@ -24,7 +24,7 @@
 ################################################################################
 
 substitutions:
-  c14_core_version: "1.3"   # informacyjny marker wersji core (komentarz, brak runtime check'u — patrz README "Updates")
+  c14_core_version: "1.3"   # bumped per release. Sensor "C14 Update available" porownuje z latest na GitHubie.
 
 esphome:
   on_boot:
@@ -37,8 +37,21 @@ esphome:
           then:
             - script.execute: master_cycle
             - logger.log: "=== Master cycle started after boot (g_master_on restored ON) ==="
+      - delay: 60s
+      - script.execute: c14_check_update   # pierwszy check ~65s po boot (WiFi/API juz up)
+
+# Update-checker: co 6h pyta GitHub API o najnowszy release c14_core,
+# porownuje z ${c14_core_version} z tego pliku. Verify SSL off — read-only
+# release info, MITM niskie ryzyko, oszczedza ~50KB flash na CA bundle.
+http_request:
+  verify_ssl: false
+  timeout: 15s
 
 globals:
+  - id: g_c14_latest
+    type: std::string
+    restore_value: false
+    initial_value: '""'
   # Single-bus parser state (jeden RX, jeden buffer)
   - id: g_buf
     type: uint8_t[32]
@@ -1140,6 +1153,40 @@ script:
             p += snprintf(h+p, 120-p, "%s%02X", i?",":"", f[i]);
           ESP_LOGI("c14", "SLAVE [%s]", h);
 
+  # Update checker: HTTP GET do GitHub API releases/latest, parsuje tag_name.
+  - id: c14_check_update
+    then:
+      - logger.log: "=== c14_check_update: pytam GitHub o latest release ==="
+      # /tags?per_page=1 zamiast /releases/latest bo response mniejszy (~400B vs ~2KB).
+      # ESPHome http_request on_response kapuje body okolo 1000B -> /releases/latest mialo "tag_name"
+      # poza zasiegiem. /tags?per_page=1 ma pole "name" zaraz na poczatku, parsuje sie.
+      - http_request.get:
+          url: https://api.github.com/repos/Pioszym/ha-c14/tags?per_page=1
+          capture_response: true
+          request_headers:
+            Accept: application/vnd.github+json
+          on_response:
+            then:
+              - lambda: |-
+                  if (response->status_code != 200) {
+                    ESP_LOGW("c14_update", "GitHub API HTTP %d", response->status_code);
+                    return;
+                  }
+                  std::string body_str(body.begin(), body.end());
+                  size_t pos = body_str.find("\"name\":");
+                  if (pos == std::string::npos) {
+                    ESP_LOGW("c14_update", "name not found in response (body=%uB)", (unsigned)body_str.size());
+                    return;
+                  }
+                  size_t q1 = body_str.find('"', pos + 7);
+                  if (q1 == std::string::npos) return;
+                  size_t q2 = body_str.find('"', q1 + 1);
+                  if (q2 == std::string::npos) return;
+                  std::string tag = body_str.substr(q1 + 1, q2 - q1 - 1);
+                  id(g_c14_latest) = tag;
+                  ESP_LOGI("c14_update", "Latest release on GitHub: %s (installed: v%s)",
+                           tag.c_str(), "${c14_core_version}");
+
 interval:
   # Single-bus RX parser — czyta z uart_bus, dispatchuje per zrodlo ramki:
   #   - AERO E4(63)  -> publikacja sensorow temperatur + ESP_LOGE (czerwone)
@@ -1347,6 +1394,20 @@ interval:
                      id(g_pos), (unsigned long)(millis() - id(g_last_byte_ms)), h);
             id(g_pos) = 0;
           }
+
+  # Update check co 6h (i raz przy on_boot — patrz esphome: on_boot).
+  - interval: 6h
+    then:
+      - script.execute: c14_check_update
+
+button:
+  - platform: template
+    name: "C14 Check for updates"
+    id: btn_c14_check
+    icon: mdi:cloud-download
+    entity_category: config
+    on_press:
+      - script.execute: c14_check_update
 
 switch:
   - platform: template
@@ -1942,6 +2003,25 @@ text_sensor:
     id: s_data_bus
     icon: mdi:calendar
 
+  - platform: template
+    name: "C14 Latest release on GitHub"
+    id: ts_c14_latest_release
+    icon: mdi:tag
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      std::string latest = id(g_c14_latest);
+      if (latest.empty()) return std::string("(checking...)");
+      return latest;
+
+  - platform: template
+    name: "C14 Installed core version"
+    id: ts_c14_installed_version
+    icon: mdi:tag-check
+    entity_category: diagnostic
+    lambda: |-
+      return std::string("v${c14_core_version}");
+
 binary_sensor:
   - platform: template
     name: "Aero: Wentylator"
@@ -1951,3 +2031,14 @@ binary_sensor:
     name: "Bus: Wietrzenie"
     id: s_wietrzenie_bus
     icon: mdi:weather-windy
+
+  - platform: template
+    name: "C14 Update available"
+    id: bs_c14_update_avail
+    icon: mdi:download-circle
+    entity_category: diagnostic
+    device_class: update
+    lambda: |-
+      std::string latest = id(g_c14_latest);
+      if (latest.empty()) return {};   // jeszcze nie pobrane
+      return latest != std::string("v${c14_core_version}");
