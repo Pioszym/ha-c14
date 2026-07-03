@@ -340,6 +340,21 @@ Tryb termostatu **nie** wpływa na E3 f[27].
 
 E3 f[28] **nigdy nie ma bitu `0x40`** — bit ten nie istnieje w protokole Nano-master.
 
+**Walidacja % przez AERO — silent mode:**
+
+AERO waliduje nastawy % per bieg z f[20-25]. "Nielegalny" zestaw wprowadza AERO w **selektywny silent mode**:
+
+- AERO nadal przyjmuje i wykonuje komendy (bieg z E4(29) działa fizycznie),
+- ale **przestaje odpowiadać** `E4(63)` na trigger E3#44,
+- power-cycle AERO **nie** zdejmuje blokady — decyduje treść kolejnych E3#44,
+- po otrzymaniu E3#44 z poprawnymi % AERO odpowiada od pierwszego cyklu.
+
+Empiria (patrz HISTORY 2026-07-03; nawB−wywB = rozjazd per bieg):
+- blokuje: naw `80/65/66` + wyw `44/35/49` (B1: 80−44=**36**); naw B1=80/75/74 przy wyw B1=30 (rozjazd 50/45/**44**)
+- OK: naw `32/37/42` + wyw `30/35/40`; niemonotoniczne naw `32/30/42` + wyw `30/35/30`; naw B3=65 przy wyw B3=30 (rozjazd **35**); naw B1=61 przy wyw B1=30 (**31**); naw B1=74 przy wyw B1=**40** (rozjazd **34** — odblokowało mimo B1>B3 i B1>64)
+
+Wykluczone jako reguła: monotoniczność B1≤B2≤B3, próg per-pole (74 OK), relacja B1>B3 (74>65 OK), limit specyficzny B1 (74 OK). **Robocza hipoteza: maksymalny rozjazd nawiew−wywiew per bieg, próg ~35-36** (35 OK, 36 blokuje — wszystkie punkty danych spójne). Pola Wietrzenia f[14-15] mają osobne zasady (75-100 legalne). Bisekcja progu niedokończona.
+
 ### 3.4 E4(63) src=0x21 — ODPOWIEDŹ AERO
 
 Jedyna ramka nadawana przez AERO. Odpowiedź na trigger E3(29) src=0x44 (~400ms).
