@@ -866,6 +866,10 @@ Komenda bypass jest dodatkowo **mirror'owana w E3 f[27] dolnych 2 bitach** (§3.
 
 **Czas reakcji AERO:** ≤ 1 cykl Master Mini (~8.5s) dla manual override; cooling demand reaguje w tym samym cyklu po przekroczeniu progu temperatury.
 
+**Konstrukcja fizyczna — bypass częściowy (obserwacja 2026-07-04):** kanał bypassu biegnie **równolegle do wymiennika** i zajmuje ~1/4 przekroju kasety; klapa jedynie otwiera kanał obejściowy, tor wymiennika **nie jest odcinany**. Przy otwartym bypassie strumień dzieli się wg oporów obu torów — większość idzie bypassem, ale część nadal przepływa przez wymiennik i odzyskuje ciepło. To typowa konstrukcja dla wymienników Recutech (linia REK+ ze zintegrowaną komorą bypass); marketingowe "100% bypass" Prodmaxa oznacza, że kanał przeniesie pełny nominalny strumień, nie że 100% powietrza omija wymiennik.
+
+Konsekwencja dla interpretacji danych: przy `E4(63) f[28]=0x60` (bypass otwarty) **T_nawiew ≠ T_czerpnia** — nawiew to mieszanka powietrza z bypassu i zza wymiennika, więc T_nawiew leży pomiędzy T_czerpni a temperaturą za wymiennikiem. Nie traktować różnicy T_nawiew−T_czerpnia przy otwartym bypassie jako błędu pomiaru ani niedomkniętej klapy.
+
 ### 5.8 Zegar, dzień tygodnia i data
 
 Master nadaje w E4(29) src=0x21 (§3.2):
