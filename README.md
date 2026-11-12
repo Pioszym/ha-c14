@@ -57,6 +57,10 @@ Bleeding-edge? Zmień `ref: vX.Y` → `ref: main`. Pamiętaj że main bywa ekspe
 
 Reverse engineering w toku. Większość kluczowych pól rozszyfrowana — ESP-master działa i steruje centralą. Szczegóły w [PROTOCOL.md](PROTOCOL.md).
 
+## Powiązane projekty
+
+- **[d-lebed/esphome-awenta-auros](https://github.com/d-lebed/esphome-awenta-auros)** — Aero 4A2 + NANO Color 2 (np. Awenta Pro Auros). Inne podejście niż tutaj: **NANO zostaje masterem**, a ESP32 udaje moduł iNext i zapisuje rejestry w panelu (ramki `R`/`W`/`T` w oknie po `F0 44`). Jeśli nie chcesz przestawiać panelu na slave albo masz Aero 4A — zacznij tam.
+
 ## Disclaimer
 
 Ten projekt to **niezależny reverse-engineering** w celu integracji rekuperatora COMPIT C14 / Prodmax z Home Assistant. Wszystkie obserwacje techniczne wykonane na sprzęcie będącym własnością autora.
