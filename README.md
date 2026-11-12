@@ -74,7 +74,7 @@ Ten projekt to **niezależny reverse-engineering** w celu integracji rekuperator
 ### Licencje
 
 - **Dokumentacja** (PROTOCOL.md, README.md): [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
-- **Kod firmware** (c14.example.yaml, packages/c14_core.yaml, ESPHome lambdy): [MIT](https://opensource.org/licenses/MIT)
+- **Kod firmware** (c14.example.yaml, packages/c14_core.yaml, ESPHome lambdy): [MIT](LICENSE)
 
 ### Uwaga dla użytkowników
 
